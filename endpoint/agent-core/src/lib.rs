@@ -22,6 +22,7 @@ pub mod hash;
 pub mod heuristics;
 pub mod licensing;
 pub mod quarantine;
+pub mod realtime;
 pub mod reputation;
 pub mod scanjob;
 pub mod scanner;

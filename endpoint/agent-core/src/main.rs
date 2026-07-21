@@ -96,7 +96,10 @@ fn load_signatures(cfg: &Config) -> SignatureDb {
         "EICAR-Test-File",
     );
     // Patrón EICAR también, por si el fichero está embebido en otro.
-    let _ = db.load_from_str("pattern 4549434152 EICAR-Pattern"); // "EICAR"
+    // Patrón EICAR completo (no sólo "EICAR") para evitar falsos positivos.
+    let _ = db.load_from_str(
+        "pattern 45494341522d5354414e444152442d414e544956495255532d544553542d46494c45 EICAR-Pattern",
+    );
 
     if let Ok(text) = std::fs::read_to_string(&cfg.signatures_path) {
         match db.load_from_str(&text) {

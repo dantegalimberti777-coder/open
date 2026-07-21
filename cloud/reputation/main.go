@@ -161,7 +161,7 @@ func (srv *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 // En producción sería un artefacto FIRMADO distribuido vía TUF/CDN.
 const latestSignatures = `# Base de firmas NGAV servida por el canal de actualización
 sha256 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f EICAR-Test-File
-pattern 4549434152 EICAR-Pattern
+pattern 45494341522d5354414e444152442d414e544956495255532d544553542d46494c45 EICAR-Pattern
 pattern 6d696d696b617a7a Trojan.Mimikatz
 pattern 786d726967 Miner.XMRig
 pattern 73656b75726c7361 Trojan.CredDump

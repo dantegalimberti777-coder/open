@@ -9,7 +9,7 @@
 
 # --- Fichero de prueba estándar de la industria (no es malware real) ---
 sha256 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f EICAR-Test-File
-pattern 454943415221 EICAR-Pattern
+pattern 45494341522d5354414e444152442d414e544956495255532d544553542d46494c45 EICAR-Pattern
 
 # --- Ejemplos ilustrativos de patrones de comportamiento en scripts ---
 # "vssadmin" (indicador fuerte de ransomware al combinarse con delete shadows)

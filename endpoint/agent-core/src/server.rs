@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::engine::Engine;
 use crate::licensing::{self, License};
 use crate::quarantine::Quarantine;
+use crate::realtime::{RealtimeConfig, RealtimeService, ScanCallback, ScanOutcome};
 use crate::reputation::{CloudReputationClient, LocalReputationCache, ReputationSource};
 use crate::scanjob::{self, Progress};
 use crate::signatures::SignatureDb;
@@ -21,7 +22,7 @@ use crate::{updater, EICAR_TEST_STRING, VERSION};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,11 +33,12 @@ const APP_JS: &str = include_str!("../ui/app.js");
 
 struct AppState {
     cfg: Config,
-    signatures: RwLock<SignatureDb>,
-    local_rep: LocalReputationCache,
+    signatures: Arc<RwLock<SignatureDb>>,
+    local_rep: Arc<LocalReputationCache>,
     jobs: Mutex<HashMap<String, Arc<Mutex<Progress>>>>,
     last_update: Mutex<Option<u64>>,
     license: Mutex<License>,
+    realtime: Arc<RealtimeService>,
 }
 
 struct Request {
@@ -44,7 +46,12 @@ struct Request {
     path: String,
     query: String,
     body: String,
+    host: String,
+    origin: String,
 }
+
+/// Tope de tamaño del cuerpo de una petición (anti-DoS de memoria).
+const MAX_BODY: usize = 1024 * 1024; // 1 MiB
 
 fn now() -> u64 {
     SystemTime::now()
@@ -62,7 +69,12 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
         "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
         "EICAR-Test-File",
     );
-    let _ = signatures.load_from_str("pattern 4549434152 EICAR-Pattern");
+    // Firma EICAR por patrón: la cadena COMPLETA del fichero de prueba estándar
+    // (no sólo "EICAR", que causaría falsos positivos en ficheros que la
+    // mencionan, p. ej. logs o el propio journal de cuarentena).
+    let _ = signatures.load_from_str(
+        "pattern 45494341522d5354414e444152442d414e544956495255532d544553542d46494c45 EICAR-Pattern",
+    );
     if let Ok(text) = std::fs::read_to_string(&cfg.signatures_path) {
         let _ = signatures.load_from_str(&text);
     }
@@ -74,11 +86,12 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
 
     let state = Arc::new(AppState {
         cfg,
-        signatures: RwLock::new(signatures),
-        local_rep,
+        signatures: Arc::new(RwLock::new(signatures)),
+        local_rep: Arc::new(local_rep),
         jobs: Mutex::new(HashMap::new()),
         last_update: Mutex::new(None),
         license: Mutex::new(license),
+        realtime: Arc::new(RealtimeService::new()),
     });
 
     // Auto-actualización silenciosa al arrancar (si hay servidor configurado).
@@ -87,6 +100,16 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
         std::thread::spawn(move || {
             let _ = do_update(&st);
         });
+    }
+
+    // Protección en tiempo real: se activa por defecto si la licencia lo permite.
+    if state
+        .license
+        .lock()
+        .map(|l| l.is_functional())
+        .unwrap_or(false)
+    {
+        start_realtime(&state);
     }
 
     let listener = TcpListener::bind(addr)?;
@@ -113,6 +136,16 @@ fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Re
         Some(r) => r,
         None => return Ok(()),
     };
+
+    // Seguridad: rechaza peticiones de orígenes no locales (CSRF/DNS-rebinding).
+    if !is_local_origin(&req) {
+        return write_response(
+            &mut stream,
+            "403 Forbidden",
+            "application/json",
+            br#"{"error":"origen no permitido"}"#,
+        );
+    }
 
     let (status, content_type, body): (&str, &str, Vec<u8>) =
         match (req.method.as_str(), req.path.as_str()) {
@@ -160,6 +193,26 @@ fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Re
                 "application/json",
                 api_checkout(&state, &req.body).into_bytes(),
             ),
+            ("GET", "/api/realtime") => (
+                "200 OK",
+                "application/json",
+                api_realtime_status(&state).into_bytes(),
+            ),
+            ("GET", "/api/realtime/events") => (
+                "200 OK",
+                "application/json",
+                api_realtime_events(&state).into_bytes(),
+            ),
+            ("POST", "/api/realtime/start") => (
+                "200 OK",
+                "application/json",
+                api_realtime_start(&state).into_bytes(),
+            ),
+            ("POST", "/api/realtime/stop") => (
+                "200 OK",
+                "application/json",
+                api_realtime_stop(&state).into_bytes(),
+            ),
             ("POST", "/api/update") => (
                 "200 OK",
                 "application/json",
@@ -201,6 +254,8 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
     };
 
     let mut content_length = 0usize;
+    let mut host = String::new();
+    let mut origin = String::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -213,7 +268,16 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         let lower = trimmed.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = lower.strip_prefix("host:") {
+            host = v.trim().to_string();
+        } else if let Some(v) = lower.strip_prefix("origin:") {
+            origin = v.trim().to_string();
         }
+    }
+
+    // Anti-DoS: rechaza cuerpos por encima del tope.
+    if content_length > MAX_BODY {
+        return Ok(None);
     }
 
     let mut body = String::new();
@@ -228,7 +292,23 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         path,
         query,
         body,
+        host,
+        origin,
     }))
+}
+
+/// Sólo se aceptan peticiones cuyo `Host`/`Origin` apunte a localhost. Bloquea
+/// ataques de DNS-rebinding y CSRF desde el navegador contra la API local.
+fn is_local_origin(req: &Request) -> bool {
+    let host_ok = req.host.is_empty()
+        || req.host.starts_with("127.0.0.1")
+        || req.host.starts_with("localhost")
+        || req.host.starts_with("[::1]");
+    let origin_ok = req.origin.is_empty()
+        || req.origin.contains("127.0.0.1")
+        || req.origin.contains("localhost")
+        || req.origin.contains("[::1]");
+    host_ok && origin_ok
 }
 
 fn write_response(
@@ -266,7 +346,7 @@ fn api_status(state: &AppState) -> String {
         .map(|l| (l.state().as_str().to_string(), l.days_left()))
         .unwrap_or_else(|_| ("trial".to_string(), 0));
     format!(
-        r#"{{"version":"{}","protection":"active","signatures":{},"quarantine":{},"scanned_before":{},"cloud":"{}","last_update":{},"score":{},"license_state":"{}","days_left":{}}}"#,
+        r#"{{"version":"{}","protection":"active","signatures":{},"quarantine":{},"scanned_before":{},"cloud":"{}","last_update":{},"score":{},"license_state":"{}","days_left":{},"realtime":{}}}"#,
         VERSION,
         sig_count,
         qn,
@@ -275,7 +355,8 @@ fn api_status(state: &AppState) -> String {
         last_update,
         score,
         lstate,
-        days_left
+        days_left,
+        state.realtime.is_running()
     )
 }
 
@@ -356,7 +437,7 @@ fn api_scan_start(state: &Arc<AppState>, body: &str) -> String {
             .and_then(CloudReputationClient::from_url);
         let rep: &dyn ReputationSource = match &cloud {
             Some(c) => c,
-            None => &st.local_rep,
+            None => st.local_rep.as_ref(),
         };
         let engine = Engine::new(&guard)
             .with_reputation(rep)
@@ -499,6 +580,105 @@ fn api_checkout(state: &AppState, body: &str) -> String {
     }
 }
 
+// --- Protección en tiempo real ---
+
+/// Construye la callback de escaneo para tiempo real, reutilizando el `Engine`
+/// (sin duplicar la lógica de detección). Captura Arcs compartidos, no `AppState`
+/// entero, para evitar ciclos de referencia.
+fn build_scan_callback(state: &Arc<AppState>) -> ScanCallback {
+    let signatures = Arc::clone(&state.signatures);
+    let local_rep = Arc::clone(&state.local_rep);
+    let cfg = state.cfg.clone();
+    Arc::new(move |path: &Path| -> Option<ScanOutcome> {
+        let guard = signatures.read().ok()?;
+        let engine = Engine::new(&guard)
+            .with_reputation(local_rep.as_ref())
+            .with_thresholds(cfg.thresholds)
+            .with_max_file_size(cfg.max_file_size);
+        let v = engine.scan_path(path).ok()?;
+        let verdict = format!("{}", v.verdict());
+        let mut quarantined = false;
+        if v.verdict() == crate::decision::Verdict::Malicious {
+            let q = Quarantine::new(&cfg.quarantine_dir);
+            quarantined = q
+                .quarantine_file(&v.path, v.threat_name.as_deref().unwrap_or("Malware"))
+                .is_ok();
+        }
+        Some(ScanOutcome {
+            verdict,
+            threat: v.threat_name.clone(),
+            score: v.decision.score,
+            quarantined,
+        })
+    })
+}
+
+/// Arranca la vigilancia en tiempo real sobre las zonas de riesgo del sistema.
+fn start_realtime(state: &Arc<AppState>) {
+    let dirs = crate::sysscan::scan_roots(ScanMode::Quick);
+    let mut rt_cfg = RealtimeConfig::new(dirs);
+    rt_cfg.max_file_size = state.cfg.max_file_size;
+    // Excluir la carpeta de datos del propio agente (cuarentena, journal,
+    // índice, licencia, firmas) para no auto-escanearse ni entrar en bucles.
+    rt_cfg
+        .excluded_substrings
+        .push(state.cfg.data_dir.to_string_lossy().to_string());
+    let scan = build_scan_callback(state);
+    if let Err(e) = state.realtime.start(rt_cfg, scan) {
+        eprintln!("[realtime] no se pudo iniciar: {e}");
+    }
+}
+
+fn api_realtime_status(state: &AppState) -> String {
+    let (scanned, detected, quarantined) = state.realtime.stats();
+    format!(
+        r#"{{"ok":true,"running":{},"started_at":{},"scanned":{},"detected":{},"quarantined":{}}}"#,
+        state.realtime.is_running(),
+        state.realtime.started_at(),
+        scanned,
+        detected,
+        quarantined
+    )
+}
+
+fn api_realtime_start(state: &Arc<AppState>) -> String {
+    let functional = state
+        .license
+        .lock()
+        .map(|l| l.is_functional())
+        .unwrap_or(true);
+    if !functional {
+        return r#"{"ok":false,"error":"license_required"}"#.to_string();
+    }
+    start_realtime(state);
+    api_realtime_status(state)
+}
+
+fn api_realtime_stop(state: &AppState) -> String {
+    state.realtime.stop();
+    api_realtime_status(state)
+}
+
+fn api_realtime_events(state: &AppState) -> String {
+    let events = state.realtime.recent_events(100);
+    let items: Vec<String> = events
+        .iter()
+        .map(|e| {
+            format!(
+                r#"{{"timestamp":{},"path":"{}","action":"{}","verdict":"{}","threat":"{}","score":{:.2},"quarantined":{}}}"#,
+                e.timestamp,
+                json_escape(&e.path),
+                json_escape(&e.action),
+                json_escape(&e.verdict),
+                json_escape(e.threat.as_deref().unwrap_or("")),
+                e.score,
+                e.quarantined
+            )
+        })
+        .collect();
+    format!(r#"{{"ok":true,"events":[{}]}}"#, items.join(","))
+}
+
 fn do_update(state: &AppState) -> Result<usize, String> {
     let url = state
         .cfg
@@ -539,7 +719,7 @@ fn api_selftest(state: &AppState) -> String {
         Err(_) => return r#"{"ok":false,"error":"lock"}"#.to_string(),
     };
     let engine = Engine::new(&guard)
-        .with_reputation(&state.local_rep)
+        .with_reputation(state.local_rep.as_ref())
         .with_thresholds(state.cfg.thresholds);
     let out = match engine.scan_path(&p) {
         Ok(v) => format!(

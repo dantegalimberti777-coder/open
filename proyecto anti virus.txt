@@ -135,6 +135,27 @@ Se agrego:
   - Proteccion: salta archivos gigantes (>128 MB) para no trabarse.
 
 --------------------------------------------------------------------------------
+ETAPA 8 - ANALISIS PROFESIONAL + PROTECCION EN TIEMPO REAL (evolucion NGAV)
+--------------------------------------------------------------------------------
+Primero se AUDITO todo el proyecto (sin tocar codigo) y se diseno la arquitectura
+de evolucion a NGAV/XDR profesional:
+  - docs/evolucion/00-analisis-arquitectura.md: fortalezas, debilidades, cuellos
+    de botella, riesgos (seguridad/rendimiento/escalabilidad), arquitectura
+    objetivo (Clean Architecture + Ports & Adapters) y plan por etapas.
+Luego se implemento la primera etapa (con tests y documentacion):
+  - PROTECCION EN TIEMPO REAL (src/realtime.rs): vigila creacion/modificacion/
+    renombrado de archivos en las zonas de riesgo y los analiza APENAS aparecen,
+    sin escaneos manuales. Pone en cuarentena lo malicioso automaticamente.
+    Usa notificaciones del kernel (inotify/ReadDirectoryChangesW/FSEvents) -> CPU
+    casi cero en reposo. Interruptor real en la interfaz + linea temporal de
+    amenazas en "Detecciones".
+  - SEGURIDAD: la API local ahora rechaza peticiones de origen no local
+    (bloquea CSRF/DNS-rebinding desde el navegador) y limita el tamaño de las
+    peticiones (anti-DoS). Se corrigio un falso positivo de la firma EICAR.
+  - Se autorizo usar dependencias curadas (primera: notify) con Cargo.lock fijado.
+  - Documentado en docs/evolucion/01-tiempo-real.md. 50 tests en verde.
+
+--------------------------------------------------------------------------------
 ETAPA 7 - MONETIZACION (COBRO): 14 DIAS GRATIS, LUEGO 10 USD/MES
 --------------------------------------------------------------------------------
 Se agrego el sistema de licencias y cobro:
@@ -185,7 +206,10 @@ open/
 [HECHO] Servicio de reputacion en la nube
 [HECHO] Sistema de cobro: 14 dias gratis + 10 USD/mes (con bloqueo al vencer)
 [HECHO] Servicio de facturacion listo para Stripe (modo demo funcionando)
-[HECHO] 47 tests automaticos del motor + tests de los servicios, todos en verde
+[HECHO] Analisis profesional completo + arquitectura de evolucion NGAV/XDR
+[HECHO] PROTECCION EN TIEMPO REAL (on-access, auto-cuarentena, linea temporal)
+[HECHO] Endurecimiento de seguridad de la API local (anti-CSRF/DNS-rebinding/DoS)
+[HECHO] 50 tests automaticos del motor + tests de los servicios, todos en verde
 
 
 ================================================================================

@@ -5,9 +5,14 @@ edition = "2021"
 description = "NGAV agent core — hybrid detection engine (MVP)"
 license = "Proprietary"
 
-# Núcleo sin dependencias externas: garantiza compilación offline y minimiza
-# la superficie de ataque del propio agente (menos código de terceros con
-# privilegios). SHA-256, entropía y parsing se implementan sobre std.
+# Dependencias curadas y auditadas (Etapa 1 en adelante). El núcleo criptográfico
+# propio (SHA-256, entropía) se mantiene; se añaden crates estándar de la
+# industria sólo donde `std` no basta, con supply-chain auditada (cargo-deny) y
+# `Cargo.lock` fijado. Ver docs/evolucion/00-analisis-arquitectura.md §5.
+[dependencies]
+# Vigilancia del sistema de ficheros en tiempo real, multiplataforma:
+# inotify (Linux), ReadDirectoryChangesW (Windows), FSEvents (macOS).
+notify = "8"
 
 [[bin]]
 name = "ngav"

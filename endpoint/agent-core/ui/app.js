@@ -30,6 +30,10 @@ const startScan = (mode, path, quarantine) =>
 const getProgress = (id) => api("/api/scan/progress?id=" + encodeURIComponent(id));
 const postSelftest = () => api("/api/selftest", { method: "POST", body: "{}" });
 const postUpdate = () => api("/api/update", { method: "POST", body: "{}" });
+const getRealtime = () => api("/api/realtime");
+const getRealtimeEvents = () => api("/api/realtime/events");
+const startRealtime = () => api("/api/realtime/start", { method: "POST", body: "{}" });
+const stopRealtime = () => api("/api/realtime/stop", { method: "POST", body: "{}" });
 const getLicense = () => api("/api/license");
 const postCheckout = (email) => api("/api/checkout", { method: "POST", body: JSON.stringify({ email }) });
 const postActivate = (key) => api("/api/license/activate", { method: "POST", body: JSON.stringify({ key }) });
@@ -96,12 +100,12 @@ async function viewDashboard() {
 
         <div class="card">
           <div class="card-row">
-            <div class="card-ico" style="background:rgba(23,185,120,.14);color:var(--ok)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1 3 5v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V5l-9-4Z"/></svg></div>
+            <div class="card-ico" style="background:${s.realtime ? "rgba(23,185,120,.14)" : "rgba(245,166,35,.16)"};color:${s.realtime ? "var(--ok)" : "var(--warn)"}"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1 3 5v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V5l-9-4Z"/></svg></div>
             <div class="grow">
               <div class="card-title">Protección en tiempo real</div>
-              <div class="card-sub" style="color:var(--ok);font-weight:600">Activa · motor híbrido</div>
+              <div class="card-sub" id="rt-sub" style="color:${s.realtime ? "var(--ok)" : "var(--warn)"};font-weight:600">${s.realtime ? "Activa · vigilando el sistema" : "Desactivada"}</div>
             </div>
-            <span class="pill pill-ok"><span class="dot"></span> ON</span>
+            <button class="toggle ${s.realtime ? "on" : ""}" id="rt-toggle" role="switch" aria-checked="${s.realtime}"><span class="knob"></span></button>
           </div>
         </div>
 
@@ -140,6 +144,34 @@ async function viewDashboard() {
     const f = content.querySelector(".gauge-fill");
     if (f) f.style.strokeDashoffset = f.dataset.off;
   });
+
+  // toggle de protección en tiempo real
+  const rt = $("#rt-toggle");
+  if (rt) {
+    rt.onclick = async () => {
+      const turningOn = !rt.classList.contains("on");
+      rt.disabled = true;
+      try {
+        const r = turningOn ? await startRealtime() : await stopRealtime();
+        if (r.ok === false && r.error === "license_required") {
+          toast("Suscríbete para activar la protección en tiempo real");
+          navigate("subscription");
+          return;
+        }
+        const on = r.running;
+        rt.classList.toggle("on", on);
+        rt.setAttribute("aria-checked", on);
+        const sub = $("#rt-sub");
+        if (sub) {
+          sub.textContent = on ? "Activa · vigilando el sistema" : "Desactivada";
+          sub.style.color = on ? "var(--ok)" : "var(--warn)";
+        }
+        statusCache = null;
+        toast(on ? "Protección en tiempo real activada" : "Protección en tiempo real desactivada");
+      } catch (e) { toast("Error: " + e.message); }
+      finally { rt.disabled = false; }
+    };
+  }
 }
 
 let scanning = false;
@@ -330,18 +362,39 @@ function viewTools() {
 }
 
 async function viewDetections() {
-  const r = await getQuarantine();
-  const items = r.items;
+  const [q, rt] = await Promise.all([getQuarantine(), getRealtimeEvents().catch(() => ({ events: [] }))]);
+  const events = (rt.events || []);
+
+  const timeline = events.length ? events.map((e) => {
+    const isMal = e.verdict === "MALICIOSO";
+    const when = e.timestamp ? new Date(e.timestamp * 1000).toLocaleString() : "";
+    return `<div class="qitem">
+      <span class="tag ${isMal ? "tag-mal" : "tag-sus"}">${esc(e.verdict)}</span>
+      <div class="grow">
+        <div class="result-path">${esc(e.threat || "Actividad sospechosa")}</div>
+        <div class="result-meta">${esc(e.action)} · ${esc(e.path)}${e.quarantined ? " · en cuarentena ✓" : ""}</div>
+      </div>
+      <div class="result-meta" style="white-space:nowrap">${esc(when)}</div>
+    </div>`;
+  }).join("") :
+    `<div class="empty"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l4 4 4-4H6a7 7 0 1 1 2 4.9l-1.5 1.5A9 9 0 1 0 13 3Zm-1 5v5l4 2 .8-1.3-3.3-2V8Z"/></svg><div>Sin actividad. La protección en tiempo real está vigilando.</div></div>`;
+
+  const quarantined = q.items.length ? q.items.map((e) => `
+    <div class="qitem">
+      <span class="tag tag-mal">NEUTRALIZADA</span>
+      <div class="grow"><div class="result-path">${esc(e.threat || "Amenaza")}</div><div class="result-meta">${esc(e.path)}</div></div>
+    </div>`).join("") :
+    `<div class="empty" style="padding:24px">Sin elementos en cuarentena.</div>`;
+
   content.innerHTML = `
     <div class="card">
-      <div class="list-title">Detecciones recientes</div>
-      <p class="section-desc">Amenazas neutralizadas y puestas en cuarentena.</p>
-      ${items.length ? items.map((e) => `
-        <div class="qitem">
-          <span class="tag tag-mal">NEUTRALIZADA</span>
-          <div class="grow"><div class="result-path">${esc(e.threat || "Amenaza")}</div><div class="result-meta">${esc(e.path)}</div></div>
-        </div>`).join("") :
-        `<div class="empty"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1 3 5v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V5l-9-4Zm-1 15-4-4 1.4-1.4L11 13.2l4.6-4.6L17 10l-6 6Z"/></svg><div>Sin detecciones. Tu equipo está limpio.</div></div>`}
+      <div class="list-title">Línea temporal de amenazas (tiempo real)</div>
+      <p class="section-desc">Actividad detectada automáticamente por la protección en tiempo real.</p>
+      ${timeline}
+    </div>
+    <div class="card" style="margin-top:18px">
+      <div class="list-title">Neutralizadas (cuarentena)</div>
+      ${quarantined}
     </div>`;
 }
 
