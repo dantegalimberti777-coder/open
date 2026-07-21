@@ -32,6 +32,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         "scan" => cmd_scan(rest, false),
         "quick" => cmd_scan(rest, true),
+        "serve" | "ui" => cmd_serve(rest),
         "selftest" => cmd_selftest(),
         "quarantine" => cmd_quarantine(rest),
         "status" => cmd_status(),
@@ -72,6 +73,8 @@ USO:
   ngav quarantine delete <id>     Elimina definitivamente un elemento
   ngav status                     Muestra el estado del agente
   ngav version                    Muestra la versión
+
+  ngav serve [--port N] [--no-open]   Abre la INTERFAZ GRÁFICA en el navegador
 
 OPCIONES (scan):
   --quarantine        Pone en cuarentena los ficheros MALICIOSOS detectados
@@ -232,6 +235,59 @@ fn cmd_scan(args: &[String], _quick: bool) -> Result<u8, String> {
     }
 
     Ok(if found > 0 { 3 } else { 0 })
+}
+
+fn cmd_serve(args: &[String]) -> Result<u8, String> {
+    let mut port = 8777u16;
+    let mut open = true;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                port = args
+                    .get(i)
+                    .ok_or("--port requiere un número")?
+                    .parse()
+                    .map_err(|_| "puerto inválido")?;
+            }
+            "--no-open" => open = false,
+            other => return Err(format!("opción desconocida: {other}")),
+        }
+        i += 1;
+    }
+
+    let cfg = Config::default_paths();
+    let addr = format!("127.0.0.1:{port}");
+    let url = format!("http://{addr}");
+    println!("== NGAV — interfaz gráfica ==");
+    println!("Abriendo {url}");
+    if open {
+        open_browser(&url);
+    }
+    ngav_agent::server::serve(cfg, &addr).map_err(|e| e.to_string())?;
+    Ok(0)
+}
+
+/// Abre la URL en el navegador por defecto según el sistema operativo.
+fn open_browser(url: &str) {
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        // Pequeña espera para que el servidor esté aceptando conexiones.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let result = if cfg!(target_os = "windows") {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", &url])
+                .spawn()
+        } else if cfg!(target_os = "macos") {
+            std::process::Command::new("open").arg(&url).spawn()
+        } else {
+            std::process::Command::new("xdg-open").arg(&url).spawn()
+        };
+        if result.is_err() {
+            eprintln!("(No se pudo abrir el navegador automáticamente; visita {url})");
+        }
+    });
 }
 
 fn cmd_selftest() -> Result<u8, String> {

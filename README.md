@@ -41,7 +41,30 @@ Lo que el motor **ya hace hoy** (extremo a extremo):
 - **CLI**: `scan`, `quick`, `selftest`, `quarantine`, `status`, `version`.
 - **Anti-envenenamiento** en la nube: reportar un hash muchas veces nunca lo promueve a "bueno".
 
-### Cómo ejecutarlo
+### Interfaz gráfica (programa de escritorio)
+
+El agente incluye una **interfaz gráfica limpia** con barra de opciones lateral (Panel, Escáner,
+Detecciones, Cuarentena, Herramientas, Ajustes), medidor de puntuación de protección y **modo oscuro**.
+Se sirve como una SPA embebida en el propio binario y se abre en el navegador:
+
+```bash
+ngav serve            # abre http://127.0.0.1:8777 en el navegador
+```
+
+### Ejecutable de Windows (.exe)
+
+Se cross-compila un `.exe` autocontenido desde Linux (la UI va embebida en el binario):
+
+```bash
+# Requisitos: rustup target add x86_64-pc-windows-gnu  +  apt install gcc-mingw-w64-x86-64
+bash infra/ci/build-windows.sh
+#   -> dist/NGAV-Windows/NGAV.exe  (+ signatures.db + "Iniciar NGAV.bat")
+```
+
+En Windows basta con hacer doble clic en **«Iniciar NGAV.bat»** (o ejecutar `NGAV.exe serve`) para
+abrir la interfaz gráfica.
+
+### Cómo ejecutarlo (CLI)
 
 ```bash
 # 1) Autotest del motor con el fichero de prueba estándar EICAR

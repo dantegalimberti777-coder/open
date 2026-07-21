@@ -23,6 +23,7 @@ pub mod heuristics;
 pub mod quarantine;
 pub mod reputation;
 pub mod scanner;
+pub mod server;
 pub mod signatures;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
