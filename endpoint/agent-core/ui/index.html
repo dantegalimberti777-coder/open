@@ -38,6 +38,10 @@
           <svg viewBox="0 0 24 24" class="ico"><path fill="currentColor" d="m22 7.7-4.6 4.6a4 4 0 0 1-5-5L17 2.7a6 6 0 0 0-8 8L2.3 17.4a2 2 0 0 0 0 2.8l1.5 1.5a2 2 0 0 0 2.8 0L13.3 15a6 6 0 0 0 8.7-7.3Z"/></svg>
           <span>Herramientas</span>
         </button>
+        <button class="nav-item" data-view="subscription">
+          <svg viewBox="0 0 24 24" class="ico"><path fill="currentColor" d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm0 4H4V6h16Zm0 10H4v-6h16Zm-2-2h-4v-2h4Z"/></svg>
+          <span>Suscripción</span>
+        </button>
         <button class="nav-item" data-view="settings">
           <svg viewBox="0 0 24 24" class="ico"><path fill="currentColor" d="M19.4 13a7.8 7.8 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1l-.4-2.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L4.6 11a7.8 7.8 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7.6 7.6 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6ZM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5Z"/></svg>
           <span>Ajustes</span>
@@ -60,6 +64,8 @@
       <header class="topbar">
         <h1 id="page-title">Panel</h1>
         <div class="topbar-right">
+          <span class="lic-badge" id="lic-badge" data-goto="subscription" style="display:none"></span>
+          <button class="btn btn-primary btn-sm" id="buy-btn" data-goto="subscription" style="display:none">Comprar ahora</button>
           <span class="pill pill-ok" id="status-pill">
             <span class="dot"></span> Protegido
           </span>

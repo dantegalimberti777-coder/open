@@ -11,6 +11,7 @@ const TITLES = {
   detections: "Detecciones",
   quarantine: "Cuarentena",
   tools: "Herramientas",
+  subscription: "Suscripción",
   settings: "Ajustes",
 };
 
@@ -29,8 +30,13 @@ const startScan = (mode, path, quarantine) =>
 const getProgress = (id) => api("/api/scan/progress?id=" + encodeURIComponent(id));
 const postSelftest = () => api("/api/selftest", { method: "POST", body: "{}" });
 const postUpdate = () => api("/api/update", { method: "POST", body: "{}" });
+const getLicense = () => api("/api/license");
+const postCheckout = (email) => api("/api/checkout", { method: "POST", body: JSON.stringify({ email }) });
+const postActivate = (key) => api("/api/license/activate", { method: "POST", body: JSON.stringify({ key }) });
 const postQAction = (id, action) =>
   api("/api/quarantine/action", { method: "POST", body: JSON.stringify({ id, action }) });
+
+let licenseCache = null;
 
 // ---------- Utilidades ----------
 function toast(msg) {
@@ -215,7 +221,17 @@ async function runScan(mode, path) {
 
   try {
     const s = await startScan(mode, path || "", q);
-    if (!s.ok) { toast("Error: " + esc(s.error || "")); scanning = false; return; }
+    if (!s.ok) {
+      scanning = false;
+      $("#scan-state") && ($("#scan-state").textContent = "Listo para escanear");
+      if (s.error === "license_required") {
+        toast(s.message || "Tu prueba ha finalizado. Suscríbete para seguir.");
+        navigate("subscription");
+      } else {
+        toast("Error: " + esc(s.error || ""));
+      }
+      return;
+    }
     const id = s.job_id;
 
     // Poll de progreso
@@ -345,12 +361,110 @@ async function viewSettings() {
   $("#set-theme").onclick = toggleTheme;
 }
 
+async function viewSubscription() {
+  const l = await getLicense();
+  licenseCache = l;
+  const active = l.state === "active";
+  const expired = l.state === "expired";
+  const stateLabel = active ? "Suscripción activa" : (expired ? "Prueba finalizada" : `Prueba gratuita — ${l.days_left} día(s) restante(s)`);
+  const stateColor = active ? "var(--ok)" : (expired ? "var(--danger)" : "var(--warn)");
+
+  content.innerHTML = `
+    <div class="grid">
+      <div class="stack">
+        <div class="card">
+          <div class="card-row">
+            <div class="card-ico" style="background:${expired ? "rgba(229,72,77,.12)" : "rgba(23,185,120,.14)"};color:${stateColor}">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1 3 5v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V5l-9-4Z"/></svg>
+            </div>
+            <div class="grow">
+              <div class="card-title">${stateLabel}</div>
+              <div class="card-sub">Plan ${esc(l.plan)} · ${l.trial_days} días de prueba, luego $${esc(l.price)}/${esc(l.period)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="list-title">¿Ya tienes una clave de licencia?</div>
+          <p class="section-desc">Introduce la clave que recibiste al suscribirte.</p>
+          <div class="field">
+            <input class="input" id="lic-key" placeholder="NGAV-XXXXXXXX" />
+            <button class="btn btn-ghost" id="btn-activate">Activar</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card score-card price-card">
+        <div class="price-tag">
+          <span class="price-amount">$${esc(l.price)}</span>
+          <span class="price-period">/${esc(l.period)}</span>
+        </div>
+        <div class="price-plan">${esc(l.plan)}</div>
+        <ul class="price-feats">
+          <li>Escaneo rápido y profundo del sistema</li>
+          <li>Protección con motor híbrido (firmas + IA + reputación)</li>
+          <li>Detección de virus, troyanos, ransomware y keyloggers</li>
+          <li>Cuarentena y actualizaciones automáticas</li>
+        </ul>
+        <button class="btn btn-primary" id="btn-subscribe" style="width:100%">
+          ${active ? "Gestionar suscripción" : `Suscribirse — $${esc(l.price)}/${esc(l.period)}`}
+        </button>
+        <p class="card-sub" style="margin-top:10px">${l.trial_days} días gratis. Cancela cuando quieras.</p>
+      </div>
+    </div>`;
+
+  $("#btn-activate").onclick = doActivate;
+  $("#btn-subscribe").onclick = doCheckout;
+}
+
+async function doCheckout() {
+  const btn = $("#btn-subscribe");
+  btn.disabled = true;
+  try {
+    const r = await postCheckout(""); // email opcional
+    if (!r.ok) { toast(r.error || "No se pudo iniciar el pago"); btn.disabled = false; return; }
+    // Modo Stripe: abre la URL de pago. Modo demo: ofrece activar la clave.
+    if (r.demo_key) {
+      const use = confirm(`Modo demo (sin pago real).\nClave emitida: ${r.demo_key}\n\n¿Activar ahora?`);
+      if (use) {
+        $("#lic-key") && ($("#lic-key").value = r.demo_key);
+        await activateKey(r.demo_key);
+      }
+    } else if (r.url) {
+      window.open(r.url, "_blank");
+      toast("Se abrió la página de pago en una pestaña nueva");
+    }
+  } catch (e) { toast("Error: " + e.message); }
+  finally { btn.disabled = false; }
+}
+
+async function doActivate() {
+  const key = ($("#lic-key") && $("#lic-key").value.trim()) || "";
+  if (!key) { toast("Introduce una clave"); return; }
+  await activateKey(key);
+}
+
+async function activateKey(key) {
+  try {
+    const r = await postActivate(key);
+    if (r.ok && r.state === "active") {
+      toast("¡Suscripción activada! Gracias.");
+      statusCache = null; licenseCache = null;
+      await refreshLicenseBadge();
+      navigate("subscription");
+    } else {
+      toast(r.error || "No se pudo activar");
+    }
+  } catch (e) { toast("Error: " + e.message); }
+}
+
 const VIEWS = {
   dashboard: viewDashboard,
   scanner: viewScanner,
   detections: viewDetections,
   quarantine: viewQuarantine,
   tools: viewTools,
+  subscription: viewSubscription,
   settings: viewSettings,
 };
 
@@ -427,6 +541,34 @@ function toggleTheme() {
 }
 $("#theme-toggle").onclick = toggleTheme;
 
+// ---------- Banner de licencia (topbar) ----------
+async function refreshLicenseBadge() {
+  let l;
+  try { l = await getLicense(); } catch (_) { return; }
+  licenseCache = l;
+  const badge = $("#lic-badge");
+  const buy = $("#buy-btn");
+  if (!badge || !buy) return;
+  if (l.state === "active") {
+    badge.style.display = "inline-flex";
+    badge.className = "lic-badge lic-active";
+    badge.innerHTML = "★ Premium";
+    buy.style.display = "none";
+  } else if (l.state === "expired") {
+    badge.style.display = "inline-flex";
+    badge.className = "lic-badge lic-expired";
+    badge.innerHTML = "Prueba finalizada";
+    buy.style.display = "inline-flex";
+    buy.textContent = "Suscribirse";
+  } else {
+    badge.style.display = "inline-flex";
+    badge.className = "lic-badge lic-trial";
+    badge.innerHTML = `Prueba · ${l.days_left} día(s)`;
+    buy.style.display = "inline-flex";
+    buy.textContent = "Comprar ahora";
+  }
+}
+
 // ---------- Init ----------
 (async function init() {
   try {
@@ -440,5 +582,6 @@ $("#theme-toggle").onclick = toggleTheme;
     const pill = $("#status-pill");
     if (s.score < 55) { pill.className = "pill pill-warn"; pill.innerHTML = '<span class="dot"></span> Revisar'; }
   } catch (_) {}
+  await refreshLicenseBadge();
   navigate("dashboard");
 })();

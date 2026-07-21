@@ -20,6 +20,7 @@ pub mod engine;
 pub mod entropy;
 pub mod hash;
 pub mod heuristics;
+pub mod licensing;
 pub mod quarantine;
 pub mod reputation;
 pub mod scanjob;

@@ -17,6 +17,10 @@ pub struct Config {
     pub thresholds: Thresholds,
     /// URL del servicio de reputación en la nube (opcional).
     pub cloud_url: Option<String>,
+    /// Fichero de estado de licencia (prueba/suscripción).
+    pub license_path: PathBuf,
+    /// URL del servicio de licencias/facturación (opcional).
+    pub license_url: Option<String>,
     /// Tamaño máximo de fichero a leer completo en memoria (bytes).
     pub max_file_size: u64,
 }
@@ -27,9 +31,11 @@ impl Config {
             signatures_path: dir.join("signatures.db"),
             index_path: dir.join("scan_index.tsv"),
             quarantine_dir: dir.join("quarantine"),
+            license_path: dir.join("license.txt"),
             data_dir: dir,
             thresholds: Thresholds::default(),
             cloud_url: None,
+            license_url: std::env::var("NGAV_LICENSE_URL").ok(),
             max_file_size: 256 * 1024 * 1024, // 256 MB
         }
     }

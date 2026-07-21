@@ -11,6 +11,7 @@
 
 use crate::config::Config;
 use crate::engine::Engine;
+use crate::licensing::{self, License};
 use crate::quarantine::Quarantine;
 use crate::reputation::{CloudReputationClient, LocalReputationCache, ReputationSource};
 use crate::scanjob::{self, Progress};
@@ -35,6 +36,7 @@ struct AppState {
     local_rep: LocalReputationCache,
     jobs: Mutex<HashMap<String, Arc<Mutex<Progress>>>>,
     last_update: Mutex<Option<u64>>,
+    license: Mutex<License>,
 }
 
 struct Request {
@@ -68,12 +70,15 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
     let mut local_rep = LocalReputationCache::new();
     local_rep.add_bad("275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f");
 
+    let license = License::load_or_init(&cfg.license_path);
+
     let state = Arc::new(AppState {
         cfg,
         signatures: RwLock::new(signatures),
         local_rep,
         jobs: Mutex::new(HashMap::new()),
         last_update: Mutex::new(None),
+        license: Mutex::new(license),
     });
 
     // Auto-actualización silenciosa al arrancar (si hay servidor configurado).
@@ -139,6 +144,21 @@ fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Re
                 "200 OK",
                 "application/json",
                 api_scan_progress(&state, &req.query).into_bytes(),
+            ),
+            ("GET", "/api/license") => (
+                "200 OK",
+                "application/json",
+                api_license(&state).into_bytes(),
+            ),
+            ("POST", "/api/license/activate") => (
+                "200 OK",
+                "application/json",
+                api_license_activate(&state, &req.body).into_bytes(),
+            ),
+            ("POST", "/api/checkout") => (
+                "200 OK",
+                "application/json",
+                api_checkout(&state, &req.body).into_bytes(),
             ),
             ("POST", "/api/update") => (
                 "200 OK",
@@ -240,15 +260,22 @@ fn api_status(state: &AppState) -> String {
     score -= (qn as i32).min(20);
     let cloud = state.cfg.cloud_url.clone().unwrap_or_default();
     let last_update = state.last_update.lock().ok().and_then(|g| *g).unwrap_or(0);
+    let (lstate, days_left) = state
+        .license
+        .lock()
+        .map(|l| (l.state().as_str().to_string(), l.days_left()))
+        .unwrap_or_else(|_| ("trial".to_string(), 0));
     format!(
-        r#"{{"version":"{}","protection":"active","signatures":{},"quarantine":{},"scanned_before":{},"cloud":"{}","last_update":{},"score":{}}}"#,
+        r#"{{"version":"{}","protection":"active","signatures":{},"quarantine":{},"scanned_before":{},"cloud":"{}","last_update":{},"score":{},"license_state":"{}","days_left":{}}}"#,
         VERSION,
         sig_count,
         qn,
         idx_exists,
         json_escape(&cloud),
         last_update,
-        score
+        score,
+        lstate,
+        days_left
     )
 }
 
@@ -288,6 +315,17 @@ fn api_quarantine_action(state: &AppState, body: &str) -> String {
 
 /// Lanza un escaneo en segundo plano y devuelve el id del trabajo.
 fn api_scan_start(state: &Arc<AppState>, body: &str) -> String {
+    // Control de licencia: bloquea el escaneo si la prueba expiró y no hay
+    // suscripción activa.
+    let functional = state
+        .license
+        .lock()
+        .map(|l| l.is_functional())
+        .unwrap_or(true);
+    if !functional {
+        return r#"{"ok":false,"error":"license_required","message":"Tu prueba de 14 días ha finalizado. Suscríbete para seguir protegido."}"#.to_string();
+    }
+
     let mode = ScanMode::from_arg(&json_field(body, "mode").unwrap_or_default());
     let custom = json_field(body, "path")
         .filter(|p| !p.is_empty())
@@ -380,6 +418,85 @@ fn api_scan_progress(state: &AppState, query: &str) -> String {
         p.suspicious,
         hits.join(",")
     )
+}
+
+fn api_license(state: &AppState) -> String {
+    let l = match state.license.lock() {
+        Ok(l) => l,
+        Err(_) => return r#"{"ok":false}"#.to_string(),
+    };
+    format!(
+        r#"{{"ok":true,"state":"{}","days_left":{},"trial_days":{},"price":"{}","period":"{}","plan":"{}","until":{},"has_key":{}}}"#,
+        l.state().as_str(),
+        l.days_left(),
+        licensing::TRIAL_DAYS,
+        licensing::PRICE_USD,
+        licensing::BILLING_PERIOD,
+        json_escape(licensing::PLAN_NAME),
+        l.active_until,
+        !l.license_key.is_empty()
+    )
+}
+
+fn api_license_activate(state: &AppState, body: &str) -> String {
+    let key = json_field(body, "key").unwrap_or_default();
+    if key.trim().is_empty() {
+        return r#"{"ok":false,"error":"clave vacía"}"#.to_string();
+    }
+
+    // Validación: contra el servicio de licencias si está configurado; si no,
+    // modo demo (acepta claves con el prefijo NGAV- y otorga 30 días).
+    let thirty_days = 30 * 86_400;
+    let (valid, until) = match state.cfg.license_url.as_deref() {
+        Some(url) => match licensing::validate_key(url, &key) {
+            Ok((v, u)) => (
+                v,
+                if u > 0 {
+                    u
+                } else {
+                    licensing::now() + thirty_days
+                },
+            ),
+            Err(e) => return format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&e)),
+        },
+        None => (key.starts_with("NGAV-"), licensing::now() + thirty_days),
+    };
+
+    if !valid {
+        return r#"{"ok":false,"error":"clave de licencia inválida"}"#.to_string();
+    }
+
+    match state.license.lock() {
+        Ok(mut l) => {
+            if let Err(e) = l.activate(&key, until, &state.cfg.license_path) {
+                return format!(
+                    r#"{{"ok":false,"error":"{}"}}"#,
+                    json_escape(&e.to_string())
+                );
+            }
+            format!(
+                r#"{{"ok":true,"state":"{}","until":{}}}"#,
+                l.state().as_str(),
+                until
+            )
+        }
+        Err(_) => r#"{"ok":false,"error":"lock"}"#.to_string(),
+    }
+}
+
+fn api_checkout(state: &AppState, body: &str) -> String {
+    let email = json_field(body, "email").unwrap_or_default();
+    match state.cfg.license_url.as_deref() {
+        Some(url) => match licensing::start_checkout(url, &email) {
+            Ok((checkout_url, key)) => format!(
+                r#"{{"ok":true,"url":"{}","demo_key":"{}"}}"#,
+                json_escape(&checkout_url),
+                json_escape(&key)
+            ),
+            Err(e) => format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&e)),
+        },
+        None => r#"{"ok":false,"error":"El servicio de suscripción no está configurado (define NGAV_LICENSE_URL)."}"#.to_string(),
+    }
 }
 
 fn do_update(state: &AppState) -> Result<usize, String> {

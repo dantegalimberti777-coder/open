@@ -10,6 +10,10 @@ build: ## Compila agente (Rust) y servicio de reputación (Go)
 test: ## Ejecuta todos los tests
 	cd endpoint/agent-core && cargo test
 	cd cloud/reputation && go test ./...
+	cd cloud/licensing && go test ./...
+
+run-license: ## Levanta el servicio de licencias (modo demo) en :8090
+	cd cloud/licensing && go run .
 
 agent: ## Solo el agente
 	cd endpoint/agent-core && cargo build --release

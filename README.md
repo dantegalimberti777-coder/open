@@ -100,6 +100,23 @@ make            # equivale a: make build test
 > **diseñados** en `docs/` y planificados por fases en `docs/roadmap.md`; el código aquí es la base
 > sólida sobre la que se construyen.
 
+## Monetización (prueba + suscripción)
+
+Modelo comercial integrado: **14 días de prueba gratis** y luego **$10/mes** (plan NGAV Premium).
+
+- El agente controla la cuenta atrás de la prueba y **bloquea los escaneos al expirar** hasta activar
+  una suscripción.
+- Banner «Prueba · N días» + «Comprar ahora», y pantalla de suscripción con precio y activación de
+  clave.
+- Servicio de facturación en Go (`cloud/licensing/`) **listo para Stripe** (modo demo para probar sin
+  cobros reales). Detalles y pasos para conectar Stripe: [`docs/monetizacion.md`](docs/monetizacion.md).
+
+```bash
+# Probar el flujo completo en local (modo demo)
+make run-license          # servicio de licencias en :8090
+NGAV_LICENSE_URL=http://127.0.0.1:8090 ngav serve   # agente con suscripción
+```
+
 ## Resumen ejecutivo
 
 **Objetivo:** detectar malware conocido y desconocido (zero-day), ransomware antes del cifrado,
