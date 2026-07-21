@@ -1,0 +1,220 @@
+================================================================================
+ PROYECTO ANTIVIRUS - NGAV (Antivirus de Nueva Generacion)
+ BITACORA DEL PROYECTO - Registro de todo lo hecho paso a paso
+================================================================================
+
+Fecha de este registro: 21/07/2026
+Rama de trabajo (Git): claude/nextgen-antivirus-ml-m0n2wq
+Repositorio: dantegalimberti777-coder/open
+
+Este archivo resume TODO lo que se construyo hasta ahora, en orden. Sirve para
+ir viendo el avance paso a paso e ir renovandolo en cada etapa.
+
+
+================================================================================
+ RESUMEN EN UNA LINEA
+================================================================================
+Tenemos un antivirus funcional (motor + interfaz grafica + .exe de Windows) con
+escaneo rapido/profundo, barra de progreso, cuarentena, actualizaciones y un
+sistema de cobro (14 dias gratis, luego 10 USD/mes). Todo probado y guardado en
+Git.
+
+
+================================================================================
+ COMO SE USA (lo que tenes hoy)
+================================================================================
+1) Descomprimir el archivo NGAV-Windows.zip.
+2) Doble clic en "Iniciar NGAV.bat" -> abre la interfaz en el navegador.
+3) En la interfaz:
+   - Panel: estado y puntuacion de proteccion.
+   - Escaner: Escaneo RAPIDO o PROFUNDO, con barra de progreso en %.
+   - Cuarentena: ver/restaurar/eliminar amenazas aisladas.
+   - Herramientas: "Buscar actualizaciones" de firmas.
+   - Suscripcion: 14 dias gratis, luego 10 USD/mes; activar clave.
+   - Ajustes y modo oscuro.
+
+Por linea de comandos (opcional):
+   NGAV.exe selftest              -> prueba el motor con el archivo EICAR
+   NGAV.exe scan C:\ruta          -> escanea una carpeta
+   NGAV.exe scan C:\ruta --quarantine  -> escanea y pone en cuarentena
+   NGAV.exe serve                 -> abre la interfaz grafica
+   NGAV.exe status                -> estado del agente
+
+
+================================================================================
+ TECNOLOGIAS USADAS
+================================================================================
+- Motor y agente:      Rust (sin dependencias externas -> compila y es seguro)
+- Interfaz:            HTML + CSS + JavaScript (servida por el propio agente)
+- Servicios en nube:   Go (reputacion y licencias/facturacion)
+- Ejecutable Windows:  compilado desde Linux (cross-compilacion con MinGW)
+- Control de versiones: Git
+
+
+================================================================================
+ HISTORIAL PASO A PASO (por etapas)
+================================================================================
+
+--------------------------------------------------------------------------------
+ETAPA 1 - DISENO TECNICO (documentacion)
+--------------------------------------------------------------------------------
+Se creo la documentacion completa del antivirus en la carpeta docs/:
+  - docs/arquitectura.md ......... Arquitectura, componentes, tecnologias, APIs,
+                                   backend, base de datos, escalabilidad.
+  - docs/motor-deteccion.md ...... Las 8 tecnicas de deteccion (firmas,
+                                   comportamiento, heuristica, machine learning,
+                                   IA, anomalias, reputacion, sandbox) con sus
+                                   ventajas y limitaciones.
+  - docs/aprendizaje-continuo.md . Como aprende de nuevas amenazas de forma
+                                   segura (sin que un atacante lo "envenene").
+  - docs/rendimiento.md .......... Como usar poca CPU/RAM/bateria.
+  - docs/interfaz.md ............. Diseno del cliente y del panel de admin.
+  - docs/seguridad-producto.md ... Como el antivirus se protege a si mismo.
+  - docs/estructura-carpetas.md .. Organizacion del proyecto.
+  - docs/roadmap.md .............. Fases: MVP, Beta, 1.0, Empresa, y 5 anios.
+
+--------------------------------------------------------------------------------
+ETAPA 2 - MOTOR DE DETECCION (codigo real en Rust)
+--------------------------------------------------------------------------------
+Se programo el nucleo del antivirus (carpeta endpoint/agent-core/), todo
+probado con tests automaticos. Piezas:
+  - hash.rs ........ Calcula SHA-256 (huella unica de cada archivo).
+  - entropy.rs ..... Mide "entropia" (detecta archivos cifrados/empaquetados).
+  - signatures.rs .. Firmas: compara contra una base de amenazas conocidas.
+  - heuristics.rs .. Reglas que detectan comportamiento sospechoso.
+  - reputation.rs .. Reputacion: consulta si un archivo es conocido bueno/malo.
+  - decision.rs .... Motor de decision: junta todas las senales y decide
+                     LIMPIO / SOSPECHOSO / MALICIOSO.
+  - engine.rs ...... Orquesta todo lo anterior por cada archivo.
+  - scanner.rs ..... Recorre carpetas; escaneo incremental (salta lo ya visto).
+  - quarantine.rs .. Aisla archivos maliciosos (los guarda cifrados/ofuscados).
+  - config.rs ...... Configuracion y rutas.
+  - main.rs ........ Comandos de consola (scan, selftest, status, etc.).
+Verificado: detecta el archivo de prueba estandar EICAR como MALICIOSO.
+
+--------------------------------------------------------------------------------
+ETAPA 3 - SERVICIO EN LA NUBE (reputacion)
+--------------------------------------------------------------------------------
+Se creo cloud/reputation/ (en Go): responde si un archivo (por su huella) es
+bueno, malo o desconocido. Incluye defensa: reportar algo muchas veces NO lo
+convierte en "bueno" (evita que enganien al sistema).
+
+--------------------------------------------------------------------------------
+ETAPA 4 - INTERFAZ GRAFICA (programa con ventana/pantalla)
+--------------------------------------------------------------------------------
+Se creo una interfaz limpia con barra de opciones a la izquierda (estilo
+Malwarebytes): Panel, Escaner, Detecciones, Cuarentena, Herramientas, Ajustes.
+Incluye medidor de "puntuacion de proteccion" y MODO OSCURO.
+El propio agente incluye un mini servidor web que muestra la interfaz en el
+navegador con el comando: NGAV.exe serve
+
+--------------------------------------------------------------------------------
+ETAPA 5 - EJECUTABLE .EXE DE WINDOWS
+--------------------------------------------------------------------------------
+Se genero un NGAV.exe real para Windows (64 bits), autocontenido (la interfaz va
+dentro del programa). Se armo el paquete NGAV-Windows.zip con:
+  - NGAV.exe
+  - signatures.db (base de firmas)
+  - "Iniciar NGAV.bat" (para abrir con doble clic)
+  - LEEME.txt (instrucciones)
+Script para reconstruirlo: infra/ci/build-windows.sh
+
+--------------------------------------------------------------------------------
+ETAPA 6 - ESCANEO RAPIDO/PROFUNDO + BARRA DE PROGRESO + ACTUALIZACIONES
+--------------------------------------------------------------------------------
+Se agrego:
+  - Escaneo RAPIDO: zonas de riesgo (temporales, descargas, autoarranque) mas
+    los procesos en ejecucion (la "CPU").
+  - Escaneo PROFUNDO: todo el sistema/disco + procesos.
+  - BARRA DE PROGRESO con porcentaje en tiempo real (medidor circular + barra +
+    archivo actual + contadores de amenazas).
+  - Mas deteccion: troyanos, RAT/C2, rootkits, keyloggers, mineros, gusanos,
+    robo de credenciales (Mimikatz/LSASS), evasion de Defender/AMSI, LOLBins.
+  - AUTO-ACTUALIZACION de firmas desde la nube (boton "Buscar actualizaciones" y
+    auto-chequeo al arrancar). El servicio Go entrega las firmas nuevas.
+  - Proteccion: salta archivos gigantes (>128 MB) para no trabarse.
+
+--------------------------------------------------------------------------------
+ETAPA 7 - MONETIZACION (COBRO): 14 DIAS GRATIS, LUEGO 10 USD/MES
+--------------------------------------------------------------------------------
+Se agrego el sistema de licencias y cobro:
+  - El agente lleva la cuenta de los 14 dias de prueba (archivo license.txt).
+  - Banner arriba: "Prueba - N dias" + boton "Comprar ahora".
+  - Pantalla "Suscripcion" con el precio 10 USD/mes, lista de beneficios y
+    campo para activar la clave de licencia.
+  - Al terminar la prueba SIN pagar, los escaneos se BLOQUEAN hasta suscribirse.
+  - Servicio de facturacion cloud/licensing/ (Go), listo para Stripe:
+      * MODO DEMO (por defecto): entrega una clave sin cobro real, para probar.
+      * MODO STRIPE (cobro real): con STRIPE_SECRET_KEY y STRIPE_PRICE_ID crea el
+        pago real de 10 USD/mes con 14 dias de prueba.
+  - Documentado en docs/monetizacion.md (incluye pasos para conectar Stripe).
+Verificado de punta a punta: prueba activa -> escaneo OK; prueba vencida ->
+escaneo bloqueado; pago (demo) -> clave -> activada -> escaneo OK de nuevo.
+
+
+================================================================================
+ ESTRUCTURA DE CARPETAS (donde esta cada cosa)
+================================================================================
+open/
+  README.md .................. Explicacion general del proyecto
+  proyecto anti virus.txt .... ESTE ARCHIVO (bitacora)
+  Makefile ................... Atajos para compilar y probar
+  docs/ ...................... Toda la documentacion tecnica
+  endpoint/agent-core/ ....... El antivirus en Rust (motor + interfaz + .exe)
+      src/ ................... Codigo del motor y del servidor de la interfaz
+      ui/ .................... La interfaz (HTML/CSS/JavaScript)
+  cloud/reputation/ .......... Servicio de reputacion (Go)
+  cloud/licensing/ ........... Servicio de licencias/cobro (Go)
+  shared/signatures/ ......... Base de firmas de amenazas
+  infra/ci/ .................. Scripts de compilacion y automatizacion
+
+
+================================================================================
+ ESTADO ACTUAL (checklist)
+================================================================================
+[HECHO] Documentacion tecnica completa
+[HECHO] Motor de deteccion (firmas + heuristica + reputacion + decision)
+[HECHO] Cuarentena (aislar/restaurar/eliminar)
+[HECHO] Escaneo incremental
+[HECHO] Interfaz grafica con barra lateral y modo oscuro
+[HECHO] Ejecutable .exe de Windows + paquete listo para usar
+[HECHO] Escaneo rapido y escaneo profundo (incluye procesos de la CPU)
+[HECHO] Barra de progreso con porcentaje
+[HECHO] Deteccion ampliada (virus, troyanos, ransomware, keyloggers, etc.)
+[HECHO] Auto-actualizacion de firmas
+[HECHO] Servicio de reputacion en la nube
+[HECHO] Sistema de cobro: 14 dias gratis + 10 USD/mes (con bloqueo al vencer)
+[HECHO] Servicio de facturacion listo para Stripe (modo demo funcionando)
+[HECHO] 47 tests automaticos del motor + tests de los servicios, todos en verde
+
+
+================================================================================
+ LO QUE FALTA / PROXIMOS PASOS (para renovar en las proximas etapas)
+================================================================================
+[ ] Conectar una cuenta real de pagos (Stripe / Paddle / Lemon Squeezy) para
+    cobrar de verdad. (Esto lo tenes que crear vos con tus datos bancarios.)
+[ ] Endurecer la licencia (token firmado) para que nadie pueda saltarse el pago
+    editando el archivo license.txt a mano.
+[ ] Firmar el .exe con un certificado de editor para que Windows no muestre el
+    aviso de "editor desconocido" (requiere comprar un certificado ~200-400/anio).
+[ ] Proteccion en tiempo real (vigilar archivos nuevos apenas se crean).
+[ ] Escaneos programados automaticos (diarios/semanales).
+[ ] Machine Learning real en el motor (modelo entrenado) y sandbox en la nube.
+[ ] Drivers a nivel de sistema para deteccion mas profunda (avanzado).
+
+
+================================================================================
+ NOTAS IMPORTANTES / HONESTAS
+================================================================================
+- El archivo "EICAR" que usamos para probar NO es un virus real: es el archivo
+  de prueba estandar que usa toda la industria antivirus.
+- Hoy el motor detecta por firmas + heuristica + reputacion. El Machine Learning
+  y el sandbox estan disenados en la documentacion pero aun no implementados.
+- Para cobrar de verdad hace falta TU cuenta de Stripe/Paddle (con tus datos
+  fiscales). El codigo ya esta listo para conectarla; ver docs/monetizacion.md.
+- Todo el avance esta guardado en Git (rama claude/nextgen-antivirus-ml-m0n2wq),
+  asi que no se pierde y se puede seguir renovando paso a paso.
+
+================================================================================
+ FIN DEL REGISTRO - Se ira actualizando en cada nueva etapa.
+================================================================================
