@@ -45,6 +45,18 @@ Lo que el motor **ya hace hoy** (extremo a extremo):
 
 El agente incluye una **interfaz gráfica limpia** con barra de opciones lateral (Panel, Escáner,
 Detecciones, Cuarentena, Herramientas, Ajustes), medidor de puntuación de protección y **modo oscuro**.
+
+Funciones del escáner:
+- **Escaneo rápido**: zonas de alto riesgo (temporales, descargas, autoarranque) **+ procesos en
+  ejecución** (escaneo de la CPU).
+- **Escaneo profundo**: todo el sistema/disco + procesos, con análisis exhaustivo de virus, troyanos,
+  rootkits, keyloggers, mineros y backdoors.
+- **Barra de progreso con porcentaje** en tiempo real (medidor circular + barra + fichero actual +
+  contadores de amenazas), servida por trabajos en segundo plano (`/api/scan/start` +
+  `/api/scan/progress`).
+- **Auto-actualización de firmas** desde la nube (`/api/update`; auto-check al arrancar si hay
+  servidor configurado). El servicio Go sirve el canal en `/v1/signatures`.
+
 Se sirve como una SPA embebida en el propio binario y se abre en el navegador:
 
 ```bash

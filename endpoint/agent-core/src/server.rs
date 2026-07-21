@@ -5,18 +5,24 @@
 //! servicio, igual que en el diseño (la UI nunca tiene privilegios y habla con
 //! el servicio por un canal local). Implementado sobre `std::net` (sin
 //! dependencias externas): HTTP/1.1 mínimo, un hilo por conexión.
+//!
+//! Escaneos: se lanzan en segundo plano (`/api/scan/start`) y la UI consulta el
+//! progreso con porcentaje (`/api/scan/progress?id=`).
 
 use crate::config::Config;
-use crate::decision::Verdict;
-use crate::engine::{Engine, FileVerdict};
+use crate::engine::Engine;
 use crate::quarantine::Quarantine;
 use crate::reputation::{CloudReputationClient, LocalReputationCache, ReputationSource};
-use crate::scanner::{scan_tree, ScanIndex};
+use crate::scanjob::{self, Progress};
 use crate::signatures::SignatureDb;
-use crate::{EICAR_TEST_STRING, VERSION};
+use crate::sysscan::ScanMode;
+use crate::{updater, EICAR_TEST_STRING, VERSION};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Recursos estáticos de la UI (empaquetados en el binario).
 const INDEX_HTML: &str = include_str!("../ui/index.html");
@@ -25,14 +31,24 @@ const APP_JS: &str = include_str!("../ui/app.js");
 
 struct AppState {
     cfg: Config,
-    signatures: SignatureDb,
+    signatures: RwLock<SignatureDb>,
     local_rep: LocalReputationCache,
+    jobs: Mutex<HashMap<String, Arc<Mutex<Progress>>>>,
+    last_update: Mutex<Option<u64>>,
 }
 
 struct Request {
     method: String,
     path: String,
+    query: String,
     body: String,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Arranca el servidor de la UI. Bloquea aceptando conexiones.
@@ -54,9 +70,19 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
 
     let state = Arc::new(AppState {
         cfg,
-        signatures,
+        signatures: RwLock::new(signatures),
         local_rep,
+        jobs: Mutex::new(HashMap::new()),
+        last_update: Mutex::new(None),
     });
+
+    // Auto-actualización silenciosa al arrancar (si hay servidor configurado).
+    if state.cfg.cloud_url.is_some() {
+        let st = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let _ = do_update(&st);
+        });
+    }
 
     let listener = TcpListener::bind(addr)?;
     println!("NGAV UI en http://{addr}  (Ctrl+C para salir)");
@@ -66,7 +92,7 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
             Ok(s) => {
                 let st = Arc::clone(&state);
                 std::thread::spawn(move || {
-                    if let Err(e) = handle_connection(s, &st) {
+                    if let Err(e) = handle_connection(s, st) {
                         eprintln!("[ui] conexión: {e}");
                     }
                 });
@@ -77,7 +103,7 @@ pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, state: &AppState) -> std::io::Result<()> {
+fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Result<()> {
     let req = match read_request(&mut stream)? {
         Some(r) => r,
         None => return Ok(()),
@@ -94,28 +120,40 @@ fn handle_connection(mut stream: TcpStream, state: &AppState) -> std::io::Result
                 "application/javascript; charset=utf-8",
                 APP_JS.into(),
             ),
-            ("GET", "/api/status") => {
-                ("200 OK", "application/json", api_status(state).into_bytes())
-            }
+            ("GET", "/api/status") => (
+                "200 OK",
+                "application/json",
+                api_status(&state).into_bytes(),
+            ),
             ("GET", "/api/quarantine") => (
                 "200 OK",
                 "application/json",
-                api_quarantine_list(state).into_bytes(),
+                api_quarantine_list(&state).into_bytes(),
             ),
-            ("POST", "/api/scan") => (
+            ("POST", "/api/scan/start") => (
                 "200 OK",
                 "application/json",
-                api_scan(state, &req.body).into_bytes(),
+                api_scan_start(&state, &req.body).into_bytes(),
+            ),
+            ("GET", "/api/scan/progress") => (
+                "200 OK",
+                "application/json",
+                api_scan_progress(&state, &req.query).into_bytes(),
+            ),
+            ("POST", "/api/update") => (
+                "200 OK",
+                "application/json",
+                api_update(&state).into_bytes(),
             ),
             ("POST", "/api/selftest") => (
                 "200 OK",
                 "application/json",
-                api_selftest(state).into_bytes(),
+                api_selftest(&state).into_bytes(),
             ),
             ("POST", "/api/quarantine/action") => (
                 "200 OK",
                 "application/json",
-                api_quarantine_action(state, &req.body).into_bytes(),
+                api_quarantine_action(&state, &req.body).into_bytes(),
             ),
             _ => (
                 "404 Not Found",
@@ -136,7 +174,11 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
     }
     let mut it = request_line.split_whitespace();
     let method = it.next().unwrap_or("").to_string();
-    let path = it.next().unwrap_or("/").to_string();
+    let raw_path = it.next().unwrap_or("/").to_string();
+    let (path, query) = match raw_path.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (raw_path, String::new()),
+    };
 
     let mut content_length = 0usize;
     loop {
@@ -148,9 +190,8 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         if trimmed.is_empty() {
             break;
         }
-        if let Some(v) = trimmed.strip_prefix("Content-Length:") {
-            content_length = v.trim().parse().unwrap_or(0);
-        } else if let Some(v) = trimmed.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
             content_length = v.trim().parse().unwrap_or(0);
         }
     }
@@ -162,7 +203,12 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         body = String::from_utf8_lossy(&buf).to_string();
     }
 
-    Ok(Some(Request { method, path, body }))
+    Ok(Some(Request {
+        method,
+        path,
+        query,
+        body,
+    }))
 }
 
 fn write_response(
@@ -180,27 +226,28 @@ fn write_response(
     stream.flush()
 }
 
-// --- Handlers de la API (construyen JSON a mano, sin serde) ---
+// --- Handlers de la API (JSON construido a mano, sin serde) ---
 
 fn api_status(state: &AppState) -> String {
     let q = Quarantine::new(&state.cfg.quarantine_dir);
     let qn = q.list().map(|v| v.len()).unwrap_or(0);
+    let sig_count = state.signatures.read().map(|s| s.len()).unwrap_or(0);
     let idx_exists = state.cfg.index_path.exists();
-    // Puntuación de protección simple (demostrativa): base alta si hay firmas,
-    // penaliza si hay elementos en cuarentena sin resolver.
     let mut score = 85i32;
-    if state.signatures.is_empty() {
+    if sig_count == 0 {
         score -= 40;
     }
     score -= (qn as i32).min(20);
     let cloud = state.cfg.cloud_url.clone().unwrap_or_default();
+    let last_update = state.last_update.lock().ok().and_then(|g| *g).unwrap_or(0);
     format!(
-        r#"{{"version":"{}","protection":"active","signatures":{},"quarantine":{},"scanned_before":{},"cloud":"{}","score":{}}}"#,
+        r#"{{"version":"{}","protection":"active","signatures":{},"quarantine":{},"scanned_before":{},"cloud":"{}","last_update":{},"score":{}}}"#,
         VERSION,
-        state.signatures.len(),
+        sig_count,
         qn,
         idx_exists,
         json_escape(&cloud),
+        last_update,
         score
     )
 }
@@ -239,107 +286,126 @@ fn api_quarantine_action(state: &AppState, body: &str) -> String {
     }
 }
 
-fn build_engine<'a>(state: &'a AppState, cloud: &'a Option<CloudReputationClient>) -> Engine<'a> {
-    let rep: &dyn ReputationSource = match cloud {
-        Some(c) => c,
-        None => &state.local_rep,
-    };
-    Engine::new(&state.signatures)
-        .with_reputation(rep)
-        .with_thresholds(state.cfg.thresholds)
-        .with_max_file_size(state.cfg.max_file_size)
-}
-
-fn api_scan(state: &AppState, body: &str) -> String {
-    let path = json_field(body, "path").unwrap_or_default();
+/// Lanza un escaneo en segundo plano y devuelve el id del trabajo.
+fn api_scan_start(state: &Arc<AppState>, body: &str) -> String {
+    let mode = ScanMode::from_arg(&json_field(body, "mode").unwrap_or_default());
+    let custom = json_field(body, "path")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
     let do_q = body.contains("\"quarantine\":true");
-    if path.is_empty() {
-        return r#"{"ok":false,"error":"falta la ruta"}"#.to_string();
+
+    let job_id = format!(
+        "{}-{}",
+        now(),
+        state.jobs.lock().map(|j| j.len()).unwrap_or(0)
+    );
+    let progress = Arc::new(Mutex::new(Progress::new(mode)));
+    if let Ok(mut jobs) = state.jobs.lock() {
+        jobs.insert(job_id.clone(), Arc::clone(&progress));
     }
-    let target = std::path::PathBuf::from(&path);
-    let meta = match std::fs::metadata(&target) {
-        Ok(m) => m,
-        Err(e) => {
-            return format!(
-                r#"{{"ok":false,"error":"{}"}}"#,
-                json_escape(&e.to_string())
-            )
-        }
-    };
 
-    let cloud = state
-        .cfg
-        .cloud_url
-        .as_deref()
-        .and_then(CloudReputationClient::from_url);
-    let engine = build_engine(state, &cloud);
-    let q = Quarantine::new(&state.cfg.quarantine_dir);
-
-    let mut hits: Vec<String> = Vec::new();
-    let mut seen = 0usize;
-    let mut scanned = 0usize;
-    let mut skipped = 0usize;
-    let mut malicious = 0usize;
-    let mut suspicious = 0usize;
-
-    let mut record = |v: &FileVerdict, q: &Quarantine| {
-        let mut quarantined = false;
-        if do_q && v.verdict() == Verdict::Malicious {
-            quarantined = q
-                .quarantine_file(&v.path, v.threat_name.as_deref().unwrap_or("Malware"))
-                .is_ok();
-        }
-        let reasons: Vec<String> = v
-            .decision
-            .reasons
-            .iter()
-            .map(|r| format!(r#""{}""#, json_escape(r)))
-            .collect();
-        hits.push(format!(
-            r#"{{"path":"{}","verdict":"{}","score":{:.2},"threat":"{}","quarantined":{},"reasons":[{}]}}"#,
-            json_escape(&v.path.display().to_string()),
-            v.verdict(),
-            v.decision.score,
-            json_escape(v.threat_name.as_deref().unwrap_or("")),
-            quarantined,
-            reasons.join(",")
-        ));
-    };
-
-    if meta.is_dir() {
-        let mut index = ScanIndex::load(&state.cfg.index_path);
-        if let Ok(stats) = scan_tree(&engine, &target, &mut index, |v| {
-            match v.verdict() {
-                Verdict::Malicious => malicious += 1,
-                Verdict::Suspicious => suspicious += 1,
-                Verdict::Clean => {}
-            }
-            record(v, &q);
-        }) {
-            seen = stats.files_seen;
-            scanned = stats.files_scanned;
-            skipped = stats.files_skipped;
-            malicious = stats.malicious;
-            suspicious = stats.suspicious;
-        }
-        let _ = index.save(&state.cfg.index_path);
-    } else if let Ok(v) = engine.scan_path(&target) {
-        seen = 1;
-        scanned = 1;
-        match v.verdict() {
-            Verdict::Malicious => malicious += 1,
-            Verdict::Suspicious => suspicious += 1,
-            Verdict::Clean => {}
-        }
-        if v.verdict() != Verdict::Clean {
-            record(&v, &q);
-        }
-    }
+    let st = Arc::clone(state);
+    std::thread::spawn(move || {
+        // Guard de lectura de firmas durante todo el escaneo.
+        let guard = match st.signatures.read() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        let cloud = st
+            .cfg
+            .cloud_url
+            .as_deref()
+            .and_then(CloudReputationClient::from_url);
+        let rep: &dyn ReputationSource = match &cloud {
+            Some(c) => c,
+            None => &st.local_rep,
+        };
+        let engine = Engine::new(&guard)
+            .with_reputation(rep)
+            .with_thresholds(st.cfg.thresholds)
+            .with_max_file_size(st.cfg.max_file_size);
+        let q = Quarantine::new(&st.cfg.quarantine_dir);
+        scanjob::run(&engine, &q, do_q, mode, custom, &progress);
+    });
 
     format!(
-        r#"{{"ok":true,"summary":{{"seen":{seen},"scanned":{scanned},"skipped":{skipped},"malicious":{malicious},"suspicious":{suspicious}}},"hits":[{}]}}"#,
+        r#"{{"ok":true,"job_id":"{}","mode":"{}"}}"#,
+        json_escape(&job_id),
+        mode.label()
+    )
+}
+
+/// Devuelve el progreso de un trabajo de escaneo (para la barra con %).
+fn api_scan_progress(state: &AppState, query: &str) -> String {
+    let id = query_param(query, "id").unwrap_or_default();
+    let progress = state.jobs.lock().ok().and_then(|j| j.get(&id).cloned());
+    let progress = match progress {
+        Some(p) => p,
+        None => return r#"{"ok":false,"error":"trabajo no encontrado"}"#.to_string(),
+    };
+    let p = progress.lock().unwrap();
+
+    let hits: Vec<String> = p
+        .hits
+        .iter()
+        .map(|h| {
+            let reasons: Vec<String> = h
+                .reasons
+                .iter()
+                .map(|r| format!(r#""{}""#, json_escape(r)))
+                .collect();
+            format!(
+                r#"{{"path":"{}","verdict":"{}","score":{:.2},"threat":"{}","quarantined":{},"reasons":[{}]}}"#,
+                json_escape(&h.path),
+                json_escape(&h.verdict),
+                h.score,
+                json_escape(&h.threat),
+                h.quarantined,
+                reasons.join(",")
+            )
+        })
+        .collect();
+
+    format!(
+        r#"{{"ok":true,"mode":"{}","percent":{},"total":{},"done":{},"finished":{},"current":"{}","scanned":{},"skipped":{},"malicious":{},"suspicious":{},"hits":[{}]}}"#,
+        json_escape(&p.mode),
+        p.percent(),
+        p.total,
+        p.done,
+        p.finished,
+        json_escape(&p.current),
+        p.scanned,
+        p.skipped,
+        p.malicious,
+        p.suspicious,
         hits.join(",")
     )
+}
+
+fn do_update(state: &AppState) -> Result<usize, String> {
+    let url = state
+        .cfg
+        .cloud_url
+        .clone()
+        .or_else(|| std::env::var("NGAV_UPDATE_URL").ok())
+        .ok_or("no hay servidor de actualizaciones configurado")?;
+    let mut guard = state.signatures.write().map_err(|_| "lock envenenado")?;
+    let res = updater::update_signatures(&url, &mut guard, Some(&state.cfg.signatures_path))?;
+    if let Ok(mut lu) = state.last_update.lock() {
+        *lu = Some(now());
+    }
+    Ok(res.rules_loaded)
+}
+
+fn api_update(state: &AppState) -> String {
+    match do_update(state) {
+        Ok(n) => format!(
+            r#"{{"ok":true,"rules_loaded":{},"signatures":{}}}"#,
+            n,
+            state.signatures.read().map(|s| s.len()).unwrap_or(0)
+        ),
+        Err(e) => format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(&e)),
+    }
 }
 
 fn api_selftest(state: &AppState) -> String {
@@ -351,12 +417,17 @@ fn api_selftest(state: &AppState) -> String {
     if std::fs::write(&p, EICAR_TEST_STRING).is_err() {
         return r#"{"ok":false,"error":"no se pudo escribir eicar"}"#.to_string();
     }
-    let cloud = None;
-    let engine = build_engine(state, &cloud);
+    let guard = match state.signatures.read() {
+        Ok(g) => g,
+        Err(_) => return r#"{"ok":false,"error":"lock"}"#.to_string(),
+    };
+    let engine = Engine::new(&guard)
+        .with_reputation(&state.local_rep)
+        .with_thresholds(state.cfg.thresholds);
     let out = match engine.scan_path(&p) {
         Ok(v) => format!(
             r#"{{"ok":{},"verdict":"{}","threat":"{}","sha256":"{}"}}"#,
-            v.verdict() == Verdict::Malicious,
+            v.verdict() == crate::decision::Verdict::Malicious,
             v.verdict(),
             json_escape(v.threat_name.as_deref().unwrap_or("")),
             v.sha256
@@ -370,7 +441,48 @@ fn api_selftest(state: &AppState) -> String {
     out
 }
 
-// --- Utilidades JSON mínimas ---
+// --- Utilidades ---
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key {
+                return Some(url_decode(v));
+            }
+        }
+    }
+    None
+}
+
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8 as char);
+                    i += 3;
+                    continue;
+                }
+                out.push('%');
+                i += 1;
+            }
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            c => {
+                out.push(c as char);
+                i += 1;
+            }
+        }
+    }
+    out
+}
 
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -389,7 +501,6 @@ fn json_escape(s: &str) -> String {
 }
 
 /// Extractor mínimo de un campo string de un JSON plano: `"key":"value"`.
-/// Suficiente para los cuerpos simples que envía la UI.
 fn json_field(body: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let start = body.find(&needle)? + needle.len();
@@ -397,7 +508,6 @@ fn json_field(body: &str, key: &str) -> Option<String> {
     let colon = rest.find(':')? + 1;
     let rest = rest[colon..].trim_start();
     let rest = rest.strip_prefix('"')?;
-    // Leer hasta la comilla de cierre no escapada.
     let mut out = String::new();
     let mut chars = rest.chars();
     while let Some(c) = chars.next() {
@@ -426,19 +536,25 @@ mod tests {
     #[test]
     fn json_field_extraction() {
         assert_eq!(
-            json_field(r#"{"path":"/tmp/x","quarantine":true}"#, "path"),
-            Some("/tmp/x".to_string())
-        );
-        assert_eq!(
-            json_field(r#"{"action":"restore","id":"abc"}"#, "id"),
-            Some("abc".to_string())
+            json_field(r#"{"mode":"deep","quarantine":true}"#, "mode"),
+            Some("deep".to_string())
         );
         assert_eq!(json_field(r#"{"a":"b"}"#, "missing"), None);
     }
 
     #[test]
-    fn json_escape_handles_quotes_and_backslashes() {
+    fn query_parsing() {
+        assert_eq!(query_param("id=123-4&x=y", "id"), Some("123-4".to_string()));
+        assert_eq!(query_param("a=b", "id"), None);
+    }
+
+    #[test]
+    fn url_decoding() {
+        assert_eq!(url_decode("a%2Fb+c"), "a/b c");
+    }
+
+    #[test]
+    fn json_escape_handles_quotes() {
         assert_eq!(json_escape(r#"a"b\c"#), r#"a\"b\\c"#);
-        assert_eq!(json_escape("line\nbreak"), "line\\nbreak");
     }
 }

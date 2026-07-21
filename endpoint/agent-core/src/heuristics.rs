@@ -44,6 +44,43 @@ const SUSPICIOUS_STRINGS: &[(&[u8], f64, &str)] = &[
     (b"cmd.exe /c", 0.10, "ejecución de shell"),
     (b"Invoke-Expression", 0.25, "ejecución dinámica (IEX)"),
     (b"DownloadString", 0.20, "descarga y ejecución"),
+    // Troyanos / RAT / C2
+    (b"cmd.exe /c ping", 0.15, "posible baliza C2"),
+    (
+        b"Net.WebClient",
+        0.18,
+        "cliente de red (posible descargador)",
+    ),
+    (
+        b"certutil -urlcache",
+        0.35,
+        "descarga con certutil (LOLBin)",
+    ),
+    (b"mshta ", 0.30, "ejecución vía mshta (LOLBin)"),
+    (b"rundll32 ", 0.20, "ejecución vía rundll32 (LOLBin)"),
+    (b"regsvr32 /s /u", 0.30, "regsvr32 (Squiblydoo/LOLBin)"),
+    (b"nc.exe -e", 0.4, "shell inversa (netcat)"),
+    (b"/dev/tcp/", 0.35, "shell inversa (bash /dev/tcp)"),
+    // Rootkits / persistencia / evasión
+    (b"SeDebugPrivilege", 0.25, "escalada de privilegios"),
+    (b"ZwUnmapViewOfSection", 0.35, "process hollowing"),
+    (b"NtQuerySystemInformation", 0.15, "enumeración de sistema"),
+    (b"HookProcAddress", 0.30, "hooking de API"),
+    (b"amsi.dll", 0.30, "manipulación de AMSI (evasión)"),
+    (b"AmsiScanBuffer", 0.35, "bypass de AMSI"),
+    (
+        b"Set-MpPreference -Disable",
+        0.45,
+        "desactivar Windows Defender",
+    ),
+    (b"netsh advfirewall set", 0.20, "manipulación de firewall"),
+    // Gusanos / robo de credenciales / minería
+    (b"lsass", 0.30, "acceso a LSASS (robo de credenciales)"),
+    (b"mimikatz", 0.6, "herramienta de robo de credenciales"),
+    (b"sekurlsa::", 0.6, "volcado de credenciales (Mimikatz)"),
+    (b"stratum+tcp://", 0.5, "minero de criptomonedas"),
+    (b"xmrig", 0.5, "minero Monero (XMRig)"),
+    (b"autorun.inf", 0.25, "propagación por USB (gusano)"),
 ];
 
 pub struct HeuristicResult {

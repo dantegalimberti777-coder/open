@@ -24,9 +24,11 @@ async function api(path, opts) {
 }
 const getStatus = () => api("/api/status");
 const getQuarantine = () => api("/api/quarantine");
-const postScan = (path, quarantine) =>
-  api("/api/scan", { method: "POST", body: JSON.stringify({ path, quarantine }) });
+const startScan = (mode, path, quarantine) =>
+  api("/api/scan/start", { method: "POST", body: JSON.stringify({ mode, path, quarantine }) });
+const getProgress = (id) => api("/api/scan/progress?id=" + encodeURIComponent(id));
 const postSelftest = () => api("/api/selftest", { method: "POST", body: "{}" });
+const postUpdate = () => api("/api/update", { method: "POST", body: "{}" });
 const postQAction = (id, action) =>
   api("/api/quarantine/action", { method: "POST", body: JSON.stringify({ id, action }) });
 
@@ -134,66 +136,137 @@ async function viewDashboard() {
   });
 }
 
+let scanning = false;
+
 function viewScanner() {
   content.innerHTML = `
-    <div class="card">
-      <div class="card-title">Escaneo de ruta</div>
-      <p class="section-desc">Introduce una carpeta o fichero. El escaneo es recursivo e incremental (salta lo no modificado).</p>
-      <div class="field">
-        <input class="input" id="scan-path" placeholder="/ruta/a/escanear" value="" />
-        <button class="btn btn-primary" id="btn-scan">Escaneo rápido</button>
-        <button class="btn btn-ghost" id="btn-scan-q">Escanear + cuarentena</button>
+    <div class="grid">
+      <div class="stack">
+        <div class="card scan-choice" id="card-quick">
+          <div class="card-row">
+            <div class="card-ico"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M13 2 3 14h7l-1 8 11-14h-7l1-6z"/></svg></div>
+            <div class="grow">
+              <div class="card-title">Escaneo rápido</div>
+              <div class="card-sub">Zonas de alto riesgo + procesos en ejecución. Rápido y ligero.</div>
+            </div>
+            <button class="btn btn-primary" id="btn-quick">Iniciar</button>
+          </div>
+        </div>
+        <div class="card scan-choice" id="card-deep">
+          <div class="card-row">
+            <div class="card-ico" style="background:rgba(229,72,77,.12);color:var(--danger)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm0 4a6 6 0 0 1 6 6h-2a4 4 0 0 0-4-4Zm0 12a6 6 0 0 1-6-6h2a4 4 0 0 0 4 4Z"/></svg></div>
+            <div class="grow">
+              <div class="card-title">Escaneo profundo</div>
+              <div class="card-sub">Todo el sistema, CPU/procesos y disco. Análisis exhaustivo de virus, troyanos, rootkits y keyloggers.</div>
+            </div>
+            <button class="btn btn-ghost" id="btn-deep">Iniciar</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title" style="font-size:15px">Escanear una ruta concreta</div>
+          <div class="field">
+            <input class="input" id="scan-path" placeholder="C:\\carpeta  o  /ruta/a/escanear" />
+            <button class="btn btn-ghost" id="btn-path">Escanear ruta</button>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="opt-q" checked /> Poner en cuarentena los archivos maliciosos automáticamente</label>
       </div>
-      <label class="check"><input type="checkbox" id="opt-q" /> Poner en cuarentena los archivos maliciosos automáticamente</label>
-      <div class="progress" id="prog"><i></i></div>
-      <div id="scan-result"></div>
-    </div>`;
-  $("#btn-scan").onclick = () => runScan(false);
-  $("#btn-scan-q").onclick = () => runScan(true);
+
+      <div class="card score-card" id="scan-panel">
+        <div class="score-title" id="scan-state">Listo para escanear</div>
+        <div class="gauge">
+          <svg width="200" height="200" viewBox="0 0 200 200">
+            <circle class="gauge-track" cx="100" cy="100" r="84"></circle>
+            <circle class="gauge-fill" id="scan-arc" cx="100" cy="100" r="84"
+              style="stroke:var(--primary);stroke-dasharray:${2*Math.PI*84};stroke-dashoffset:${2*Math.PI*84}"></circle>
+          </svg>
+          <div class="gauge-num"><div class="n" id="scan-pct">0<span style="font-size:22px">%</span></div><div class="lbl" id="scan-mode">—</div></div>
+        </div>
+        <div class="progress on"><i id="scan-bar" style="width:0%"></i></div>
+        <div class="scan-current" id="scan-current">—</div>
+        <div class="summary-row" id="scan-counts" style="justify-content:center;margin-top:10px"></div>
+      </div>
+    </div>
+    <div id="scan-result"></div>`;
+  $("#btn-quick").onclick = () => runScan("quick");
+  $("#btn-deep").onclick = () => runScan("deep");
+  $("#btn-path").onclick = () => {
+    const p = $("#scan-path").value.trim();
+    if (!p) { toast("Indica una ruta"); return; }
+    runScan("quick", p);
+  };
 }
 
-async function runScan(forceQ) {
-  const path = $("#scan-path").value.trim();
-  if (!path) { toast("Indica una ruta"); return; }
-  const q = forceQ || $("#opt-q").checked;
-  const prog = $("#prog");
-  const out = $("#scan-result");
-  prog.classList.add("on");
-  out.innerHTML = "";
+async function runScan(mode, path) {
+  if (scanning) { toast("Ya hay un escaneo en curso"); return; }
+  const q = $("#opt-q") ? $("#opt-q").checked : true;
+  const circ = 2 * Math.PI * 84;
+  const setPct = (pct, arcColor) => {
+    const bar = $("#scan-bar"), arc = $("#scan-arc"), num = $("#scan-pct");
+    if (bar) bar.style.width = pct + "%";
+    if (arc) { arc.style.strokeDashoffset = circ * (1 - pct / 100); if (arcColor) arc.style.stroke = arcColor; }
+    if (num) num.innerHTML = pct + '<span style="font-size:22px">%</span>';
+  };
+  scanning = true;
+  $("#scan-state").textContent = "Escaneando…";
+  $("#scan-mode").textContent = mode === "deep" ? "profundo" : "rápido";
+  $("#scan-result").innerHTML = "";
+  setPct(0, "var(--primary)");
+
   try {
-    const r = await postScan(path, q);
-    if (!r.ok) { out.innerHTML = `<div class="empty">Error: ${esc(r.error)}</div>`; return; }
-    const sm = r.summary;
-    let html = `<div class="summary-row">
-      <div class="stat"><div class="v">${sm.seen}</div><div class="k">Vistos</div></div>
-      <div class="stat"><div class="v">${sm.scanned}</div><div class="k">Escaneados</div></div>
-      <div class="stat"><div class="v">${sm.skipped}</div><div class="k">Saltados</div></div>
-      <div class="stat bad"><div class="v">${sm.malicious}</div><div class="k">Maliciosos</div></div>
-      <div class="stat warn"><div class="v">${sm.suspicious}</div><div class="k">Sospechosos</div></div>
-    </div>`;
-    if (r.hits.length === 0) {
-      html += `<div class="empty"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1 3 5v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V5l-9-4Zm-1 15-4-4 1.4-1.4L11 13.2l4.6-4.6L17 10l-6 6Z"/></svg><div>Sin amenazas. Todo limpio.</div></div>`;
-    } else {
-      for (const h of r.hits) {
-        const isMal = h.verdict === "MALICIOSO";
-        html += `<div class="result">
-          <div class="result-head">
-            <span class="tag ${isMal ? "tag-mal" : "tag-sus"}">${esc(h.verdict)}</span>
-            <span class="result-path">${esc(h.path)}</span>
-          </div>
-          <div class="result-meta">score ${h.score.toFixed(2)}${h.threat ? " · amenaza: " + esc(h.threat) : ""}${h.quarantined ? " · en cuarentena ✓" : ""}</div>
-          ${h.reasons.length ? `<ul class="reasons">${h.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-        </div>`;
-      }
-    }
-    out.innerHTML = html;
-    statusCache = null; // refrescar estado al volver al panel
-    if (sm.malicious > 0) toast(`${sm.malicious} amenaza(s) detectada(s)`);
+    const s = await startScan(mode, path || "", q);
+    if (!s.ok) { toast("Error: " + esc(s.error || "")); scanning = false; return; }
+    const id = s.job_id;
+
+    // Poll de progreso
+    await new Promise((resolve) => {
+      const timer = setInterval(async () => {
+        let p;
+        try { p = await getProgress(id); } catch (_) { return; }
+        if (!p.ok) return;
+        setPct(p.percent, p.malicious > 0 ? "var(--danger)" : (p.suspicious > 0 ? "var(--warn)" : "var(--ok)"));
+        $("#scan-current").textContent = p.current;
+        $("#scan-counts").innerHTML =
+          `<div class="stat"><div class="v">${p.done}/${p.total}</div><div class="k">Archivos</div></div>
+           <div class="stat bad"><div class="v">${p.malicious}</div><div class="k">Maliciosos</div></div>
+           <div class="stat warn"><div class="v">${p.suspicious}</div><div class="k">Sospechosos</div></div>`;
+        if (p.finished) {
+          clearInterval(timer);
+          $("#scan-state").textContent = "Escaneo completado";
+          $("#scan-current").textContent = `${p.scanned} archivos analizados`;
+          renderScanResults(p);
+          if (p.malicious > 0) toast(`${p.malicious} amenaza(s) detectada(s)`);
+          statusCache = null;
+          resolve();
+        }
+      }, 350);
+    });
   } catch (e) {
-    out.innerHTML = `<div class="empty">Error de conexión: ${esc(e.message)}</div>`;
+    toast("Error: " + esc(e.message));
   } finally {
-    prog.classList.remove("on");
+    scanning = false;
   }
+}
+
+function renderScanResults(p) {
+  const out = $("#scan-result");
+  if (!p.hits.length) {
+    out.innerHTML = `<div class="card"><div class="empty"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 1 3 5v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V5l-9-4Zm-1 15-4-4 1.4-1.4L11 13.2l4.6-4.6L17 10l-6 6Z"/></svg><div>Sin amenazas. Tu equipo está limpio.</div></div></div>`;
+    return;
+  }
+  let html = `<div class="card"><div class="list-title">Amenazas detectadas (${p.hits.length})</div>`;
+  for (const h of p.hits) {
+    const isMal = h.verdict === "MALICIOSO";
+    html += `<div class="result">
+      <div class="result-head">
+        <span class="tag ${isMal ? "tag-mal" : "tag-sus"}">${esc(h.verdict)}</span>
+        <span class="result-path">${esc(h.path)}</span>
+      </div>
+      <div class="result-meta">score ${h.score.toFixed(2)}${h.threat ? " · amenaza: " + esc(h.threat) : ""}${h.quarantined ? " · en cuarentena ✓" : ""}</div>
+      ${h.reasons.length ? `<ul class="reasons">${h.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
+  out.innerHTML = html + "</div>";
 }
 
 async function viewQuarantine() {
@@ -229,7 +302,11 @@ function viewTools() {
           <button class="btn btn-primary btn-sm" data-action="selftest">Ejecutar</button>
         </div>
         <div class="card-row" style="border:1px solid var(--border);border-radius:10px;padding:14px">
-          <div class="grow"><div class="card-title" style="font-size:15px">Escaneo rápido del sistema</div><div class="card-sub">Zonas de alto riesgo (temporal del usuario).</div></div>
+          <div class="grow"><div class="card-title" style="font-size:15px">Buscar actualizaciones</div><div class="card-sub" id="upd-sub">Descarga las firmas más recientes desde la nube.</div></div>
+          <button class="btn btn-primary btn-sm" data-action="update">Actualizar</button>
+        </div>
+        <div class="card-row" style="border:1px solid var(--border);border-radius:10px;padding:14px">
+          <div class="grow"><div class="card-title" style="font-size:15px">Escaneo profundo del sistema</div><div class="card-sub">Todo el disco + CPU/procesos.</div></div>
           <button class="btn btn-ghost btn-sm" data-goto="scanner">Ir al escáner</button>
         </div>
       </div>
@@ -304,6 +381,24 @@ document.addEventListener("click", async (ev) => {
     try {
       const r = await postSelftest();
       toast(r.ok ? `Motor OK — detectado: ${r.threat}` : `Fallo: ${r.error || r.verdict}`);
+    } catch (e) { toast("Error: " + e.message); }
+    finally { action.disabled = false; }
+    return;
+  }
+  if (action && action.dataset.action === "update") {
+    action.disabled = true;
+    const sub = $("#upd-sub");
+    if (sub) sub.textContent = "Actualizando…";
+    try {
+      const r = await postUpdate();
+      if (r.ok) {
+        toast(`Actualizado: ${r.rules_loaded} reglas (${r.signatures} firmas)`);
+        if (sub) sub.textContent = `Última actualización: ahora · ${r.signatures} firmas`;
+      } else {
+        toast("Sin actualización: " + (r.error || ""));
+        if (sub) sub.textContent = r.error || "No se pudo actualizar";
+      }
+      statusCache = null;
     } catch (e) { toast("Error: " + e.message); }
     finally { action.disabled = false; }
     return;

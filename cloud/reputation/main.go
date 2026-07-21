@@ -157,10 +157,29 @@ func (srv *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// latestSignatures es la base de firmas que sirve el canal de actualización.
+// En producción sería un artefacto FIRMADO distribuido vía TUF/CDN.
+const latestSignatures = `# Base de firmas NGAV servida por el canal de actualización
+sha256 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f EICAR-Test-File
+pattern 4549434152 EICAR-Pattern
+pattern 6d696d696b617a7a Trojan.Mimikatz
+pattern 786d726967 Miner.XMRig
+pattern 73656b75726c7361 Trojan.CredDump
+pattern 2f6465762f7463702f Backdoor.ReverseShell
+pattern 76737361646d696e Ransomware.ShadowDelete
+`
+
+func (srv *Server) handleSignatures(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(latestSignatures))
+}
+
 func (srv *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/reputation/report", srv.handleReport)
 	mux.HandleFunc("/v1/reputation/", srv.handleLookup)
+	mux.HandleFunc("/v1/signatures", srv.handleSignatures)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

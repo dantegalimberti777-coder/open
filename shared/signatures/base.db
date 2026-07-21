@@ -13,4 +13,10 @@ pattern 454943415221 EICAR-Pattern
 
 # --- Ejemplos ilustrativos de patrones de comportamiento en scripts ---
 # "vssadmin" (indicador fuerte de ransomware al combinarse con delete shadows)
-pattern 767373616d696e Ransomware.VssadminIndicator
+pattern 76737361646d696e Ransomware.VssadminIndicator
+
+# --- Familias frecuentes (patrones ilustrativos) ---
+pattern 6d696d696b617a7a Trojan.Mimikatz
+pattern 73656b75726c7361 Trojan.CredDump
+pattern 786d726967 Miner.XMRig
+pattern 2f6465762f7463702f Backdoor.ReverseShell
