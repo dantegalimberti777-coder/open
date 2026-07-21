@@ -1,0 +1,24 @@
+[package]
+name = "ngav-agent"
+version = "0.1.0"
+edition = "2021"
+description = "NGAV agent core — hybrid detection engine (MVP)"
+license = "Proprietary"
+
+# Núcleo sin dependencias externas: garantiza compilación offline y minimiza
+# la superficie de ataque del propio agente (menos código de terceros con
+# privilegios). SHA-256, entropía y parsing se implementan sobre std.
+
+[[bin]]
+name = "ngav"
+path = "src/main.rs"
+
+[lib]
+name = "ngav_agent"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

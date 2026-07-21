@@ -1,0 +1,19 @@
+# Rust
+/endpoint/agent-core/target/
+**/*.rs.bk
+Cargo.lock
+
+# Go
+/cloud/**/bin/
+*.test
+*.out
+
+# Datos de runtime del agente
+.ngav/
+*.qbin
+
+# Editor / SO
+.DS_Store
+*.swp
+.idea/
+.vscode/

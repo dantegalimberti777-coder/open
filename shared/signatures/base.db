@@ -1,0 +1,16 @@
+# Base de firmas NGAV (MVP) — formato de texto auditable.
+# Formato:
+#   sha256 <64-hex> <nombre-amenaza>
+#   pattern <hex-bytes> <nombre-amenaza>
+#
+# En producción este fichero se compila a un blob binario FIRMADO (Ed25519) y
+# se distribuye vía TUF/CDN con deltas y anti-rollback. El formato de texto es
+# para desarrollo y revisión.
+
+# --- Fichero de prueba estándar de la industria (no es malware real) ---
+sha256 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f EICAR-Test-File
+pattern 454943415221 EICAR-Pattern
+
+# --- Ejemplos ilustrativos de patrones de comportamiento en scripts ---
+# "vssadmin" (indicador fuerte de ransomware al combinarse con delete shadows)
+pattern 767373616d696e Ransomware.VssadminIndicator

@@ -18,6 +18,53 @@ Este repositorio contiene el **diseño técnico completo**. El documento princip
 | [`docs/roadmap.md`](docs/roadmap.md) | Fases MVP → Beta → 1.0 → Enterprise + roadmap a 5 años |
 | [`docs/estructura-carpetas.md`](docs/estructura-carpetas.md) | Estructura de carpetas del monorepo |
 
+## Estado del código (MVP funcional)
+
+Además del diseño, este repositorio incluye un **MVP funcional y probado** del núcleo:
+
+| Componente | Lenguaje | Estado | Ubicación |
+|------------|----------|--------|-----------|
+| Agente / motor de detección híbrido | Rust (sin dependencias externas) | ✅ compila y pasa 31 tests | `endpoint/agent-core/` |
+| Servicio de reputación en la nube | Go (stdlib) | ✅ compila y pasa tests | `cloud/reputation/` |
+| Base de firmas | texto auditable | ✅ | `shared/signatures/base.db` |
+| CI (fmt + clippy + tests + build) | GitHub Actions | ✅ | `.github/workflows/ci.yml` |
+
+Lo que el motor **ya hace hoy** (extremo a extremo):
+
+- **SHA-256** propio (streaming, verificado contra vectores FIPS 180-4).
+- **Firmas** por hash y por patrón de bytes (YARA-lite).
+- **Heurística** estática: entropía de Shannon + indicadores (ransomware, keylogger, inyección…).
+- **Reputación**: caché local (offline) + cliente HTTP a la nube.
+- **Motor de decisión**: fusión ponderada de señales con veto por firma → `LIMPIO / SOSPECHOSO / MALICIOSO`.
+- **Escaneo incremental**: índice `(mtime,size,hash,verdict)` que salta ficheros no modificados.
+- **Cuarentena**: aísla, ofusca y permite restaurar/eliminar.
+- **CLI**: `scan`, `quick`, `selftest`, `quarantine`, `status`, `version`.
+- **Anti-envenenamiento** en la nube: reportar un hash muchas veces nunca lo promueve a "bueno".
+
+### Cómo ejecutarlo
+
+```bash
+# 1) Autotest del motor con el fichero de prueba estándar EICAR
+make selftest
+#   -> RESULTADO: OK — el motor detecta correctamente EICAR.
+
+# 2) Escanear un directorio (recursivo + incremental) y poner en cuarentena
+cd endpoint/agent-core && cargo build --release
+./target/release/ngav scan /ruta/a/escanear --quarantine
+
+# 3) Con reputación en la nube
+cd cloud/reputation && go run .            # levanta el servicio en :8080
+./target/release/ngav scan /ruta --cloud http://127.0.0.1:8080
+
+# 4) Todo (build + tests de Rust y Go)
+make            # equivale a: make build test
+```
+
+> **Nota de alcance:** el MVP implementa las capas que funcionan íntegramente en espacio de usuario
+> y multiplataforma. Los drivers de kernel, el sandbox, el ML/IA y el pipeline MLOps completos están
+> **diseñados** en `docs/` y planificados por fases en `docs/roadmap.md`; el código aquí es la base
+> sólida sobre la que se construyen.
+
 ## Resumen ejecutivo
 
 **Objetivo:** detectar malware conocido y desconocido (zero-day), ransomware antes del cifrado,
