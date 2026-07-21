@@ -261,15 +261,61 @@ fn cmd_serve(args: &[String]) -> Result<u8, String> {
     }
 
     let cfg = Config::default_paths();
-    let addr = format!("127.0.0.1:{port}");
-    let url = format!("http://{addr}");
+    let _ = cfg.ensure_dirs();
+    let log_path = cfg.data_dir.join("startup.log");
+
+    // Busca un puerto libre a partir del solicitado (evita fallar si está
+    // ocupado). Prueba hasta 20 puertos.
+    let chosen = find_free_port(port, 20);
+    let (addr, url) = match chosen {
+        Some(p) => (format!("127.0.0.1:{p}"), format!("http://127.0.0.1:{p}")),
+        None => {
+            let msg = format!(
+                "No se pudo abrir ningún puerto entre {} y {}. ¿Otro programa los usa?",
+                port,
+                port + 20
+            );
+            write_startup_log(&log_path, &format!("ERROR: {msg}"));
+            return Err(msg);
+        }
+    };
+
+    // Registra el arranque en disco (por si la ventana se cierra sin verse).
+    write_startup_log(
+        &log_path,
+        &format!(
+            "NGAV {VERSION} arrancando.\nURL: {url}\nData dir: {}\nSi la interfaz no abre sola, entra manualmente a {url}",
+            cfg.data_dir.display()
+        ),
+    );
+
     println!("== NGAV — interfaz gráfica ==");
-    println!("Abriendo {url}");
+    println!("Abre la interfaz en tu navegador:  {url}");
+    println!("(Registro de arranque: {})", log_path.display());
     if open {
         open_browser(&url);
     }
-    ngav_agent::server::serve(cfg, &addr).map_err(|e| e.to_string())?;
+    if let Err(e) = ngav_agent::server::serve(cfg, &addr) {
+        let msg = format!("El servidor se detuvo: {e}");
+        write_startup_log(&log_path, &format!("ERROR: {msg}"));
+        return Err(msg);
+    }
     Ok(0)
+}
+
+/// Devuelve el primer puerto libre a partir de `base` (o `None` si ninguno).
+fn find_free_port(base: u16, tries: u16) -> Option<u16> {
+    (base..base.saturating_add(tries))
+        .find(|&p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok())
+}
+
+/// Escribe (o sobrescribe) el log de arranque. Nunca falla ruidosamente.
+fn write_startup_log(path: &Path, msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = std::fs::write(path, format!("[{ts}] {msg}\n"));
 }
 
 /// Abre la URL en el navegador por defecto según el sistema operativo.
