@@ -115,6 +115,9 @@ pub fn is_excluded(path: &std::path::Path) -> bool {
 
 /// Enumera los ejecutables de los procesos en ejecución (escaneo de la CPU).
 pub fn process_executables() -> Vec<PathBuf> {
+    // `mut` sólo se usa en Linux (rama /proc); en otros SO el conjunto queda
+    // vacío hasta implementar la API nativa correspondiente.
+    #[allow(unused_mut)]
     let mut set: BTreeSet<PathBuf> = BTreeSet::new();
 
     #[cfg(target_os = "linux")]
@@ -135,28 +138,13 @@ pub fn process_executables() -> Vec<PathBuf> {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        // Best-effort: pide a PowerShell las rutas de los procesos.
-        if let Ok(out) = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process | Select-Object -ExpandProperty ExecutablePath",
-            ])
-            .output()
-        {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                let p = line.trim();
-                if !p.is_empty() {
-                    let pb = PathBuf::from(p);
-                    if pb.exists() {
-                        set.insert(pb);
-                    }
-                }
-            }
-        }
-    }
+    // En Windows NO lanzamos PowerShell/cmd para enumerar procesos: ejecutar
+    // comandos externos es un patrón que Windows Defender marca como
+    // comportamiento malicioso ("el programa ejecuta comandos"). La enumeración
+    // de procesos en Windows se implementará con la API nativa Toolhelp32
+    // (CreateToolhelp32Snapshot) — sin lanzar procesos — en la Etapa 2 (motor de
+    // comportamiento). Hasta entonces, el escaneo de procesos queda vacío en
+    // Windows (el escaneo de ficheros no se ve afectado).
 
     set.into_iter().collect()
 }

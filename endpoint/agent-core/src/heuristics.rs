@@ -1,87 +1,70 @@
 //! Heurística estática: reglas expertas baratas sobre el contenido del fichero.
 //!
-//! Produce una señal en [0.0, 1.0] combinando indicadores estructurales y de
-//! contenido sospechosos. No es determinista como las firmas: complementa la
-//! detección de variantes y familias sin firma exacta, a costa de más falsos
-//! positivos (por eso su peso en la decisión es moderado).
+//! Produce una señal en [0.0, 1.0] combinando:
+//!   1. Indicadores **estructurales** (entropía, cabecera PE) — sin cadenas.
+//!   2. Palabras clave de indicadores (IOC) **cargadas en tiempo de ejecución**
+//!      desde un fichero de datos opcional.
+//!
+//! ## Por qué las IOC NO van embebidas en el binario
+//! Incrustar nombres de herramientas/técnicas de ataque (p. ej. utilidades de
+//! volcado de credenciales o comandos de ransomware) como cadenas literales hace
+//! que **otros antivirus (incl. Windows Defender) marquen nuestro propio `.exe`
+//! como malicioso** ("el programa contiene/ejecuta comandos de atacante"). Por
+//! eso el binario **no** contiene esas cadenas: las palabras clave se cargan de
+//! un fichero externo opcional (`<data_dir>/heuristics.txt`) o se inyectan por
+//! código. La detección de esas técnicas se cubre además con firmas (patrones
+//! hex, que no son cadenas legibles) y, en la Etapa 2, con el motor de
+//! comportamiento en tiempo de ejecución.
 
 use crate::decision::{Signal, Source};
 use crate::entropy;
+use std::sync::OnceLock;
 
-/// Cadenas asociadas a técnicas frecuentes de malware/scripting ofuscado.
-/// Cada acierto suma peso. Lista ilustrativa (MVP); en producción vendría de
-/// reglas actualizables desde la nube.
-const SUSPICIOUS_STRINGS: &[(&[u8], f64, &str)] = &[
-    (b"powershell -enc", 0.35, "PowerShell codificado"),
-    (b"powershell -e ", 0.30, "PowerShell codificado"),
-    (
-        b"FromBase64String",
-        0.20,
-        "decodificación base64 en memoria",
-    ),
-    (b"CreateRemoteThread", 0.35, "inyección de hilo remoto"),
-    (b"VirtualAllocEx", 0.25, "asignación de memoria remota"),
-    (b"WriteProcessMemory", 0.30, "escritura en proceso ajeno"),
-    (b"SetWindowsHookEx", 0.30, "hook global (posible keylogger)"),
-    (b"GetAsyncKeyState", 0.25, "captura de teclado"),
-    (
-        b"vssadmin delete shadows",
-        0.5,
-        "borrado de shadow copies (ransomware)",
-    ),
-    (
-        b"wbadmin delete catalog",
-        0.4,
-        "borrado de backups (ransomware)",
-    ),
-    (b"bcdedit /set", 0.25, "manipulación de arranque"),
-    (
-        b"schtasks /create",
-        0.15,
-        "persistencia por tarea programada",
-    ),
-    (b"reg add", 0.10, "modificación de registro"),
-    (b"cmd.exe /c", 0.10, "ejecución de shell"),
-    (b"Invoke-Expression", 0.25, "ejecución dinámica (IEX)"),
-    (b"DownloadString", 0.20, "descarga y ejecución"),
-    // Troyanos / RAT / C2
-    (b"cmd.exe /c ping", 0.15, "posible baliza C2"),
-    (
-        b"Net.WebClient",
-        0.18,
-        "cliente de red (posible descargador)",
-    ),
-    (
-        b"certutil -urlcache",
-        0.35,
-        "descarga con certutil (LOLBin)",
-    ),
-    (b"mshta ", 0.30, "ejecución vía mshta (LOLBin)"),
-    (b"rundll32 ", 0.20, "ejecución vía rundll32 (LOLBin)"),
-    (b"regsvr32 /s /u", 0.30, "regsvr32 (Squiblydoo/LOLBin)"),
-    (b"nc.exe -e", 0.4, "shell inversa (netcat)"),
-    (b"/dev/tcp/", 0.35, "shell inversa (bash /dev/tcp)"),
-    // Rootkits / persistencia / evasión
-    (b"SeDebugPrivilege", 0.25, "escalada de privilegios"),
-    (b"ZwUnmapViewOfSection", 0.35, "process hollowing"),
-    (b"NtQuerySystemInformation", 0.15, "enumeración de sistema"),
-    (b"HookProcAddress", 0.30, "hooking de API"),
-    (b"amsi.dll", 0.30, "manipulación de AMSI (evasión)"),
-    (b"AmsiScanBuffer", 0.35, "bypass de AMSI"),
-    (
-        b"Set-MpPreference -Disable",
-        0.45,
-        "desactivar Windows Defender",
-    ),
-    (b"netsh advfirewall set", 0.20, "manipulación de firewall"),
-    // Gusanos / robo de credenciales / minería
-    (b"lsass", 0.30, "acceso a LSASS (robo de credenciales)"),
-    (b"mimikatz", 0.6, "herramienta de robo de credenciales"),
-    (b"sekurlsa::", 0.6, "volcado de credenciales (Mimikatz)"),
-    (b"stratum+tcp://", 0.5, "minero de criptomonedas"),
-    (b"xmrig", 0.5, "minero Monero (XMRig)"),
-    (b"autorun.inf", 0.25, "propagación por USB (gusano)"),
-];
+/// Palabra clave heurística cargada en runtime: (bytes en minúsculas, peso, etiqueta).
+type Keyword = (Vec<u8>, f64, String);
+
+static KEYWORDS: OnceLock<Vec<Keyword>> = OnceLock::new();
+
+/// Inyecta la tabla de palabras clave (una sola vez). Uso: el agente la llama
+/// al arrancar tras leer el fichero de indicadores, o los tests para probar.
+/// Devuelve `true` si se estableció (si ya estaba puesta, no hace nada).
+pub fn set_keywords(list: Vec<(String, f64, String)>) -> bool {
+    let parsed: Vec<Keyword> = list
+        .into_iter()
+        .map(|(needle, weight, label)| (needle.to_ascii_lowercase().into_bytes(), weight, label))
+        .collect();
+    KEYWORDS.set(parsed).is_ok()
+}
+
+/// Carga palabras clave desde un fichero de texto opcional. Formato por línea:
+/// `keyword|peso|etiqueta` (las líneas vacías y las que empiezan por `#` se
+/// ignoran). Silencioso si el fichero no existe.
+pub fn load_keywords_file(path: &std::path::Path) -> usize {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    let mut list = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(3, '|').collect();
+        if parts.len() == 3 {
+            if let Ok(w) = parts[1].trim().parse::<f64>() {
+                list.push((parts[0].trim().to_string(), w, parts[2].trim().to_string()));
+            }
+        }
+    }
+    let n = list.len();
+    set_keywords(list);
+    n
+}
+
+fn keywords() -> &'static [Keyword] {
+    KEYWORDS.get().map(|v| v.as_slice()).unwrap_or(&[])
+}
 
 pub struct HeuristicResult {
     pub score: f64,
@@ -103,7 +86,7 @@ pub fn analyze_detailed(content: &[u8]) -> HeuristicResult {
     let mut score = 0.0f64;
     let mut reasons = Vec::new();
 
-    // 1) Entropía: comprimido/cifrado/empaquetado.
+    // 1) Entropía: comprimido/cifrado/empaquetado (señal estructural, sin cadenas).
     let e = entropy::shannon(content);
     if e > 7.5 && content.len() > 512 {
         score += 0.4;
@@ -114,22 +97,22 @@ pub fn analyze_detailed(content: &[u8]) -> HeuristicResult {
     }
 
     // 2) Ejecutable PE (cabecera MZ) — contexto, no malicia por sí mismo.
-    let is_pe = content.starts_with(b"MZ");
-    if is_pe {
+    if content.starts_with(b"MZ") {
         reasons.push("ejecutable PE".to_string());
-        // PE + entropía muy alta refuerza sospecha de empaquetado.
         if e > 7.2 {
-            score += 0.15;
+            score += 0.15; // PE + entropía alta => posible empaquetado
         }
     }
 
-    // 3) Cadenas sospechosas (búsqueda case-insensitive simple).
-    let lower = to_lower(content);
-    for (needle, weight, label) in SUSPICIOUS_STRINGS {
-        let needle_lower = to_lower(needle);
-        if window_contains(&lower, &needle_lower) {
-            score += weight;
-            reasons.push((*label).to_string());
+    // 3) Palabras clave de indicadores (sólo si se han cargado en runtime).
+    let kws = keywords();
+    if !kws.is_empty() {
+        let lower = to_lower(content);
+        for (needle, weight, label) in kws {
+            if window_contains(&lower, needle) {
+                score += weight;
+                reasons.push(label.clone());
+            }
         }
     }
 
@@ -161,29 +144,32 @@ mod tests {
     }
 
     #[test]
-    fn ransomware_indicators_score_high() {
-        let content = b"cmd.exe /c vssadmin delete shadows /all /quiet && wbadmin delete catalog";
-        let r = analyze_detailed(content);
-        assert!(
-            r.score >= 0.6,
-            "score {} too low for ransomware iocs",
-            r.score
-        );
-    }
-
-    #[test]
-    fn keylogger_indicators_flagged() {
-        let content = b"...SetWindowsHookEx...GetAsyncKeyState...";
-        let s = analyze(content);
-        assert!(s.score > 0.3);
-    }
-
-    #[test]
     fn high_entropy_blob_flagged() {
         let data: Vec<u8> = (0..2048u32)
             .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
             .collect();
         let r = analyze_detailed(&data);
-        assert!(r.score > 0.0);
+        assert!(r.score > 0.0, "entropía alta debería puntuar");
+    }
+
+    #[test]
+    fn pe_header_is_noted() {
+        let mut data = vec![b'M', b'Z'];
+        data.extend_from_slice(b"resto de un ejecutable de ejemplo");
+        let r = analyze_detailed(&data);
+        assert!(r.reasons.iter().any(|s| s.contains("PE")));
+    }
+
+    #[test]
+    fn loaded_keywords_are_matched() {
+        // Las IOC se inyectan en runtime (no están en el binario).
+        set_keywords(vec![(
+            "eviltoken".to_string(),
+            0.9,
+            "indicador de prueba".to_string(),
+        )]);
+        let r = analyze_detailed(b"contenido con EVILTOKEN dentro");
+        assert!(r.reasons.iter().any(|s| s == "indicador de prueba"));
+        assert!(r.score >= 0.9);
     }
 }

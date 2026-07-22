@@ -3,20 +3,18 @@
 #   sha256 <64-hex> <nombre-amenaza>
 #   pattern <hex-bytes> <nombre-amenaza>
 #
-# En producción este fichero se compila a un blob binario FIRMADO (Ed25519) y
-# se distribuye vía TUF/CDN con deltas y anti-rollback. El formato de texto es
-# para desarrollo y revisión.
+# Los patrones se almacenan en HEXADECIMAL (no como texto legible) a propósito:
+# así este fichero de datos no contiene cadenas de indicadores en claro que
+# otros antivirus pudieran marcar. En producción se compila a un blob binario
+# FIRMADO (Ed25519) y se distribuye vía TUF/CDN con deltas y anti-rollback.
 
 # --- Fichero de prueba estándar de la industria (no es malware real) ---
 sha256 275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f EICAR-Test-File
 pattern 45494341522d5354414e444152442d414e544956495255532d544553542d46494c45 EICAR-Pattern
 
-# --- Ejemplos ilustrativos de patrones de comportamiento en scripts ---
-# "vssadmin" (indicador fuerte de ransomware al combinarse con delete shadows)
-pattern 76737361646d696e Ransomware.VssadminIndicator
-
-# --- Familias frecuentes (patrones ilustrativos) ---
-pattern 6d696d696b617a7a Trojan.Mimikatz
-pattern 73656b75726c7361 Trojan.CredDump
-pattern 786d726967 Miner.XMRig
+# --- Indicadores de familias frecuentes (patrones en hex) ---
+pattern 76737361646d696e Ransomware.ShadowIndicator
+pattern 6d696d696b617a7a HackTool.CredDumpA
+pattern 73656b75726c7361 HackTool.CredDumpB
+pattern 786d726967 Miner.CoinMinerA
 pattern 2f6465762f7463702f Backdoor.ReverseShell

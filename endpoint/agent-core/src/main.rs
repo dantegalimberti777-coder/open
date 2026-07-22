@@ -15,7 +15,7 @@ use ngav_agent::quarantine::Quarantine;
 use ngav_agent::reputation::{CloudReputationClient, LocalReputationCache, ReputationSource};
 use ngav_agent::scanner::{scan_tree, ScanIndex};
 use ngav_agent::signatures::SignatureDb;
-use ngav_agent::{EICAR_TEST_STRING, VERSION};
+use ngav_agent::{eicar_test_bytes, VERSION};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -110,6 +110,8 @@ fn load_signatures(cfg: &Config) -> SignatureDb {
             Err(e) => eprintln!("[firmas] aviso: {e}"),
         }
     }
+    // Palabras clave heurísticas opcionales (fichero externo, no embebidas).
+    ngav_agent::heuristics::load_keywords_file(&cfg.data_dir.join("heuristics.txt"));
     db
 }
 
@@ -318,21 +320,27 @@ fn write_startup_log(path: &Path, msg: &str) {
     let _ = std::fs::write(path, format!("[{ts}] {msg}\n"));
 }
 
-/// Abre la URL en el navegador por defecto según el sistema operativo.
+/// Abre la URL en el navegador por defecto.
+///
+/// IMPORTANTE (Windows): NO se lanza ningún proceso externo (`cmd`/`powershell`).
+/// Lanzar `cmd` para abrir el navegador es un patrón que los antivirus marcan
+/// como "el programa ejecuta comandos" (comportamiento tipo malware). En Windows
+/// se imprime la URL y la abre el lanzador (`Iniciar NGAV.bat`) o el usuario. En
+/// macOS/Linux se usa el abridor estándar del escritorio (no es sospechoso).
+#[cfg(target_os = "windows")]
+fn open_browser(url: &str) {
+    println!("Abre esta dirección en tu navegador:  {url}");
+}
+
+#[cfg(not(target_os = "windows"))]
 fn open_browser(url: &str) {
     let url = url.to_string();
     std::thread::spawn(move || {
-        // Pequeña espera para que el servidor esté aceptando conexiones.
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let result = if cfg!(target_os = "windows") {
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "", &url])
-                .spawn()
-        } else if cfg!(target_os = "macos") {
-            std::process::Command::new("open").arg(&url).spawn()
-        } else {
-            std::process::Command::new("xdg-open").arg(&url).spawn()
-        };
+        #[cfg(target_os = "macos")]
+        let result = std::process::Command::new("open").arg(&url).spawn();
+        #[cfg(not(target_os = "macos"))]
+        let result = std::process::Command::new("xdg-open").arg(&url).spawn();
         if result.is_err() {
             eprintln!("(No se pudo abrir el navegador automáticamente; visita {url})");
         }
@@ -344,7 +352,7 @@ fn cmd_selftest() -> Result<u8, String> {
     let dir = std::env::temp_dir().join("ngav-selftest");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let eicar_path = dir.join("eicar.com");
-    std::fs::write(&eicar_path, EICAR_TEST_STRING).map_err(|e| e.to_string())?;
+    std::fs::write(&eicar_path, eicar_test_bytes()).map_err(|e| e.to_string())?;
 
     let cfg = Config::default_paths();
     let db = load_signatures(&cfg);

@@ -18,7 +18,7 @@ use crate::reputation::{CloudReputationClient, LocalReputationCache, ReputationS
 use crate::scanjob::{self, Progress};
 use crate::signatures::SignatureDb;
 use crate::sysscan::ScanMode;
-use crate::{updater, EICAR_TEST_STRING, VERSION};
+use crate::{eicar_test_bytes, updater, VERSION};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -63,6 +63,10 @@ fn now() -> u64 {
 /// Arranca el servidor de la UI. Bloquea aceptando conexiones.
 pub fn serve(cfg: Config, addr: &str) -> std::io::Result<()> {
     cfg.ensure_dirs()?;
+
+    // Palabras clave heurísticas opcionales (fichero externo; no se envía por
+    // defecto para no incrustar cadenas de IOC en el binario).
+    crate::heuristics::load_keywords_file(&cfg.data_dir.join("heuristics.txt"));
 
     let mut signatures = SignatureDb::new();
     signatures.add_hash(
@@ -711,7 +715,7 @@ fn api_selftest(state: &AppState) -> String {
         return r#"{"ok":false,"error":"no se pudo crear temp"}"#.to_string();
     }
     let p = dir.join("eicar.com");
-    if std::fs::write(&p, EICAR_TEST_STRING).is_err() {
+    if std::fs::write(&p, eicar_test_bytes()).is_err() {
         return r#"{"ok":false,"error":"no se pudo escribir eicar"}"#.to_string();
     }
     let guard = match state.signatures.read() {
