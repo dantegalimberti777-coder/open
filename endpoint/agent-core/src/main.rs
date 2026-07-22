@@ -34,6 +34,7 @@ fn main() -> ExitCode {
         "quick" => cmd_scan(rest, true),
         "serve" | "ui" => cmd_serve(rest),
         "selftest" => cmd_selftest(),
+        "behavior-demo" | "behavior" => cmd_behavior_demo(),
         "quarantine" => cmd_quarantine(rest),
         "status" => cmd_status(),
         "version" | "--version" | "-V" => {
@@ -75,6 +76,7 @@ USO:
   ngav version                    Muestra la versión
 
   ngav serve [--port N] [--no-open]   Abre la INTERFAZ GRÁFICA en el navegador
+  ngav behavior-demo                  Demo del motor de comportamiento (Etapa 2)
 
 OPCIONES (scan):
   --quarantine        Pone en cuarentena los ficheros MALICIOSOS detectados
@@ -345,6 +347,55 @@ fn open_browser(url: &str) {
             eprintln!("(No se pudo abrir el navegador automáticamente; visita {url})");
         }
     });
+}
+
+/// Demostración del motor de comportamiento (Etapa 2): alimenta una secuencia
+/// sintética de eventos y muestra cómo la puntuación de riesgo escala y se
+/// explica. Útil para verificar el motor sin necesidad del sensor del SO.
+fn cmd_behavior_demo() -> Result<u8, String> {
+    use ngav_agent::behavior::{BehaviorEngine, Indicator::*, RiskLevel, SystemEvent};
+    println!("== NGAV — demo del motor de comportamiento ==\n");
+
+    let mut eng = BehaviorEngine::default();
+    let pid = 4242;
+    let steps: &[(&str, Vec<ngav_agent::behavior::Indicator>)] = &[
+        (
+            "El proceso reserva memoria y escribe en otro proceso",
+            vec![ProcessInjection],
+        ),
+        (
+            "Crea un hilo remoto en el proceso objetivo",
+            vec![ProcessInjection],
+        ),
+        (
+            "Intenta leer la memoria del subsistema de credenciales",
+            vec![CredentialAccess],
+        ),
+        (
+            "Intenta desactivar la protección de seguridad",
+            vec![DefenseEvasion],
+        ),
+    ];
+
+    for (i, (desc, inds)) in steps.iter().enumerate() {
+        let ev = SystemEvent::new(pid, inds.clone());
+        let alert = eng.observe(&ev);
+        let score = eng.score_of(pid);
+        println!("Paso {}: {desc}", i + 1);
+        println!("   riesgo acumulado: {score:.2}");
+        if let Some(a) = alert {
+            println!("   -> nivel: {}", a.level.as_str());
+            if a.level == RiskLevel::Malicious {
+                println!("\n[ALERTA] Proceso {pid} clasificado como MALICIOSO.");
+                println!("{}", a.explanation);
+                println!("\nDecisión por comportamiento (no por firma): se combinaron");
+                println!("varios indicadores hasta superar el umbral. Fin de la demo.");
+                return Ok(0);
+            }
+        }
+        println!();
+    }
+    Ok(0)
 }
 
 fn cmd_selftest() -> Result<u8, String> {

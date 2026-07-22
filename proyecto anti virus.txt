@@ -214,7 +214,12 @@ open/
         - Sacadas del binario las palabras clave de malware (mimikatz, etc.).
         - El .exe ya NO lanza cmd.exe ni powershell.
         (Pendiente para no ver ningun aviso: firmar el .exe con certificado.)
-[HECHO] 50 tests automaticos del motor + tests de los servicios, todos en verde
+[HECHO] Motor de comportamiento (Etapa 2, nucleo): detecta tecnicas de malware
+        por lo que HACE un proceso (inyeccion, hollowing, robo de credenciales,
+        evasion de defensas, ransomware, persistencia...) con puntuacion de
+        riesgo MITRE ATT&CK. Probalo con:  NGAV.exe behavior-demo
+        (Falta el "sensor" que le da eventos reales del sistema: siguiente paso.)
+[HECHO] 56 tests automaticos del motor + tests de los servicios, todos en verde
 
 
 ================================================================================

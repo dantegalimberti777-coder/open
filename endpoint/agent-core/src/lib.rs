@@ -14,6 +14,7 @@
 //! - [`quarantine`]: aislamiento de ficheros maliciosos.
 //! - [`config`]: configuración y rutas.
 
+pub mod behavior;
 pub mod config;
 pub mod decision;
 pub mod engine;
