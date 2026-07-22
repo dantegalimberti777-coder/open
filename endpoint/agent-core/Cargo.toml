@@ -14,6 +14,17 @@ license = "Proprietary"
 # inotify (Linux), ReadDirectoryChangesW (Windows), FSEvents (macOS).
 notify = "8"
 
+# Solo en Windows: APIs oficiales de Microsoft para leer la memoria del sistema
+# (GlobalMemoryStatusEx) y recortar la memoria de trabajo del propio proceso
+# (SetProcessWorkingSetSizeEx) en la función "Optimizar". Son APIs estándar y
+# benignas usadas por aplicaciones legítimas.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
 [[bin]]
 name = "ngav"
 path = "src/main.rs"

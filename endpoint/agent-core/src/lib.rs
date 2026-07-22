@@ -22,6 +22,7 @@ pub mod entropy;
 pub mod hash;
 pub mod heuristics;
 pub mod licensing;
+pub mod optimizer;
 pub mod quarantine;
 pub mod realtime;
 pub mod reputation;

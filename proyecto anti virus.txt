@@ -219,7 +219,11 @@ open/
         evasion de defensas, ransomware, persistencia...) con puntuacion de
         riesgo MITRE ATT&CK. Probalo con:  NGAV.exe behavior-demo
         (Falta el "sensor" que le da eventos reales del sistema: siguiente paso.)
-[HECHO] 56 tests automaticos del motor + tests de los servicios, todos en verde
+[HECHO] Boton OPTIMIZAR: limpia archivos temporales que ya no se usan (reporta
+        cuantos archivos y cuanto espacio libera) y muestra/optimiza la RAM.
+        Seguro: no toca documentos, solo temporales y cache; deja los archivos
+        en uso. Nueva seccion "Optimizar" en la interfaz.
+[HECHO] 61 tests automaticos del motor + tests de los servicios, todos en verde
 
 
 ================================================================================

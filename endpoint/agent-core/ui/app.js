@@ -11,9 +11,17 @@ const TITLES = {
   detections: "Detecciones",
   quarantine: "Cuarentena",
   tools: "Herramientas",
+  optimize: "Optimizar",
   subscription: "Suscripción",
   settings: "Ajustes",
 };
+
+function fmtBytes(n) {
+  if (!n) return "0 MB";
+  const mb = n / (1024 * 1024);
+  if (mb >= 1024) return (mb / 1024).toFixed(2) + " GB";
+  return mb.toFixed(1) + " MB";
+}
 
 let statusCache = null;
 
@@ -30,6 +38,7 @@ const startScan = (mode, path, quarantine) =>
 const getProgress = (id) => api("/api/scan/progress?id=" + encodeURIComponent(id));
 const postSelftest = () => api("/api/selftest", { method: "POST", body: "{}" });
 const postUpdate = () => api("/api/update", { method: "POST", body: "{}" });
+const postOptimize = () => api("/api/optimize", { method: "POST", body: "{}" });
 const getRealtime = () => api("/api/realtime");
 const getRealtimeEvents = () => api("/api/realtime/events");
 const startRealtime = () => api("/api/realtime/start", { method: "POST", body: "{}" });
@@ -511,12 +520,75 @@ async function activateKey(key) {
   } catch (e) { toast("Error: " + e.message); }
 }
 
+function viewOptimize() {
+  content.innerHTML = `
+    <div class="grid">
+      <div class="stack">
+        <div class="card">
+          <div class="card-title">Optimizar el equipo</div>
+          <p class="section-desc">Limpia archivos temporales que ya no se usan y libera memoria para que tu PC vaya más rápido.</p>
+          <div class="card-row" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-top:6px">
+            <div class="card-ico"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 2h12v2H6zM4 6h16l-1.5 14a2 2 0 0 1-2 1.8H7.5a2 2 0 0 1-2-1.8L4 6zm5 3v9h2V9H9zm4 0v9h2V9h-2z"/></svg></div>
+            <div class="grow"><div class="card-title" style="font-size:15px">Archivos temporales</div><div class="card-sub">Carpetas temporales del sistema y del usuario (deja los que están en uso).</div></div>
+          </div>
+          <div class="card-row" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-top:10px">
+            <div class="card-ico" style="background:rgba(23,185,120,.14);color:var(--ok)"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M4 4h16v6H4zM4 14h16v6H4zM7 6v2h2V6zm0 10v2h2v-2z"/></svg></div>
+            <div class="grow"><div class="card-title" style="font-size:15px">Memoria RAM</div><div class="card-sub">Libera la memoria de trabajo y muestra la RAM disponible.</div></div>
+          </div>
+        </div>
+        <div id="opt-result"></div>
+      </div>
+
+      <div class="card score-card">
+        <div class="score-title">Optimización con un clic</div>
+        <div style="font-size:56px;margin:14px 0" aria-hidden="true">🧹</div>
+        <button class="btn btn-primary" id="btn-optimize" style="width:100%;font-size:16px;padding:14px">Optimizar ahora</button>
+        <p class="card-sub" style="margin-top:12px">Seguro: no toca tus documentos, solo archivos temporales y caché.</p>
+      </div>
+    </div>`;
+  $("#btn-optimize").onclick = doOptimize;
+}
+
+async function doOptimize() {
+  const btn = $("#btn-optimize");
+  const out = $("#opt-result");
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "Optimizando…";
+  out.innerHTML = "";
+  try {
+    const r = await postOptimize();
+    if (!r.ok) { toast("No se pudo optimizar"); return; }
+    const ramLine = r.ram_total > 0
+      ? `<div class="stat"><div class="v">${fmtBytes(r.ram_avail_after)}</div><div class="k">RAM disponible</div></div>
+         <div class="stat"><div class="v">${fmtBytes(r.ram_total)}</div><div class="k">RAM total</div></div>`
+      : "";
+    out.innerHTML = `<div class="card">
+      <div class="list-title">✅ Optimización completada</div>
+      <div class="summary-row" style="margin-top:8px">
+        <div class="stat"><div class="v">${r.files_deleted}</div><div class="k">Archivos limpiados</div></div>
+        <div class="stat" style="border-color:var(--ok)"><div class="v" style="color:var(--ok)">${fmtBytes(r.bytes_freed)}</div><div class="k">Espacio liberado</div></div>
+        ${ramLine}
+      </div>
+      ${r.errors > 0 ? `<p class="card-sub" style="margin-top:10px">${r.errors} archivo(s) en uso no se pudieron borrar (es normal).</p>` : ""}
+    </div>`;
+    toast(`Liberado: ${fmtBytes(r.bytes_freed)} en ${r.files_deleted} archivos`);
+    statusCache = null;
+  } catch (e) {
+    toast("Error: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 const VIEWS = {
   dashboard: viewDashboard,
   scanner: viewScanner,
   detections: viewDetections,
   quarantine: viewQuarantine,
   tools: viewTools,
+  optimize: viewOptimize,
   subscription: viewSubscription,
   settings: viewSettings,
 };

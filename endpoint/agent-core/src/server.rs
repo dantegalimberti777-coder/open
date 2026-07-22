@@ -217,6 +217,11 @@ fn handle_connection(mut stream: TcpStream, state: Arc<AppState>) -> std::io::Re
                 "application/json",
                 api_realtime_stop(&state).into_bytes(),
             ),
+            ("POST", "/api/optimize") => (
+                "200 OK",
+                "application/json",
+                api_optimize(&state).into_bytes(),
+            ),
             ("POST", "/api/update") => (
                 "200 OK",
                 "application/json",
@@ -681,6 +686,25 @@ fn api_realtime_events(state: &AppState) -> String {
         })
         .collect();
     format!(r#"{{"ok":true,"events":[{}]}}"#, items.join(","))
+}
+
+/// Optimiza el sistema: limpia temporales reposados y libera memoria. Protege
+/// la carpeta de datos del propio agente.
+fn api_optimize(state: &AppState) -> String {
+    let exclude = vec![state.cfg.data_dir.to_string_lossy().to_string()];
+    // Sólo temporales sin tocar en los últimos 10 minutos (evita los activos).
+    let report = crate::optimizer::optimize(&exclude, std::time::Duration::from_secs(600));
+    format!(
+        r#"{{"ok":true,"files_deleted":{},"bytes_freed":{},"dirs_scanned":{},"errors":{},"ram_total":{},"ram_avail_before":{},"ram_avail_after":{},"ram_freed":{}}}"#,
+        report.clean.files_deleted,
+        report.clean.bytes_freed,
+        report.clean.dirs_scanned,
+        report.clean.errors,
+        report.ram_total,
+        report.ram_avail_before,
+        report.ram_avail_after,
+        report.ram_freed()
+    )
 }
 
 fn do_update(state: &AppState) -> Result<usize, String> {
