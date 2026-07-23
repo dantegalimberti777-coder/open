@@ -225,6 +225,31 @@ open/
         en uso. Nueva seccion "Optimizar" en la interfaz.
 [HECHO] 61 tests automaticos del motor + tests de los servicios, todos en verde
 
+--------------------------------------------------------------------------------
+ ETAPA: ANALISIS ESTATICO DE EJECUTABLES + INVESTIGACION DE AMENAZAS
+--------------------------------------------------------------------------------
+[HECHO] Nuevo motor de ANALISIS ESTATICO (archivo staticanalysis.rs): abre los
+        ejecutables (Windows PE, Linux ELF, Mac Mach-O) SIN ejecutarlos y estudia
+        su estructura: secciones, entropia, imports/exports, overlay y permisos.
+        De ahi saca senales de sospecha (empaquetado/ofuscacion, seccion con
+        permiso de escritura+ejecucion, ejecutable sin imports, entropia muy
+        alta, overlay grande) y calcula un "riesgo estructural".
+        Probalo con:  NGAV.exe analyze <ruta-del-programa>
+[HECHO] Ese riesgo estructural se suma al motor de decision como UNA senal mas
+        (peso bajo, solo para ejecutables con riesgo apreciable) para NO generar
+        falsos positivos en programas legitimos. Sigue la regla de siempre:
+        ninguna capa condena sola.
+[HECHO] Verificado: el .exe recompilado para Windows sigue LIMPIO de las cadenas
+        que Defender marca (sin EICAR, sin powershell, sin cmd, sin nombres de
+        herramientas de ataque). 66 tests en verde; clippy y formato limpios.
+[HECHO] Documento de INVESTIGACION PROFUNDA de amenazas y deteccion, en
+        docs/investigacion/amenazas-y-deteccion.md: cubre todos los tipos de
+        malware (virus, gusanos, ransomware, rootkits, fileless, LOLBins, UEFI...),
+        tecnicas de evasion, persistencia, rootkits, motores de deteccion, IA
+        aplicada, catalogo de modulos, respuesta automatica y forense. Es una
+        especificacion DEFENSIVA (deteccion/prevencion/respuesta/recuperacion) y
+        marca honestamente que esta HECHO, que es PARCIAL y que es ROADMAP.
+
 
 ================================================================================
  LO QUE FALTA / PROXIMOS PASOS (para renovar en las proximas etapas)
@@ -246,8 +271,11 @@ open/
 ================================================================================
 - El archivo "EICAR" que usamos para probar NO es un virus real: es el archivo
   de prueba estandar que usa toda la industria antivirus.
-- Hoy el motor detecta por firmas + heuristica + reputacion. El Machine Learning
-  y el sandbox estan disenados en la documentacion pero aun no implementados.
+- Hoy el motor detecta por firmas + heuristica + entropia + analisis estatico
+  (PE/ELF/Mach-O) + comportamiento (ATT&CK) + reputacion. El Machine Learning, el
+  sandbox, el escaner de memoria y el motor de red estan disenados en la
+  documentacion (docs/investigacion/amenazas-y-deteccion.md) pero aun no
+  implementados: el roadmap marca claramente que es HECHO, PARCIAL y ROADMAP.
 - Para cobrar de verdad hace falta TU cuenta de Stripe/Paddle (con tus datos
   fiscales). El codigo ya esta listo para conectarla; ver docs/monetizacion.md.
 - Todo el avance esta guardado en Git (rama claude/nextgen-antivirus-ml-m0n2wq),
