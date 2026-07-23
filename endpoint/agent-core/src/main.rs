@@ -32,6 +32,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         "scan" => cmd_scan(rest, false),
         "quick" => cmd_scan(rest, true),
+        "analyze" => cmd_analyze(rest),
         "serve" | "ui" => cmd_serve(rest),
         "selftest" => cmd_selftest(),
         "behavior-demo" | "behavior" => cmd_behavior_demo(),
@@ -68,6 +69,7 @@ fn print_usage() {
 USO:
   ngav scan <ruta> [opciones]     Escanea un fichero o directorio (recursivo, incremental)
   ngav quick <ruta>               Escaneo rápido (equivalente a scan; alias)
+  ngav analyze <ruta>             Análisis estático de un ejecutable (PE/ELF/Mach-O)
   ngav selftest                   Verifica el motor con el fichero de prueba EICAR
   ngav quarantine list            Lista los elementos en cuarentena
   ngav quarantine restore <id>    Restaura un elemento
@@ -242,6 +244,32 @@ fn cmd_scan(args: &[String], _quick: bool) -> Result<u8, String> {
     }
 
     Ok(if found > 0 { 3 } else { 0 })
+}
+
+/// Análisis estático de un ejecutable: muestra su estructura (formato, secciones,
+/// entropía, imports/exports, overlay) y los indicadores estructurales de
+/// sospecha, **sin ejecutarlo**. No emite veredicto de amenaza por sí solo: es
+/// una de las señales que alimentan el motor de decisión.
+fn cmd_analyze(args: &[String]) -> Result<u8, String> {
+    let path = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or("falta la ruta del ejecutable a analizar")?;
+    let path = PathBuf::from(path);
+    let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+
+    println!("== NGAV — análisis estático: {} ==", path.display());
+    match ngav_agent::staticanalysis::analyze(&data) {
+        Some(report) => {
+            println!("{}", ngav_agent::staticanalysis::describe(&report));
+            // Código de salida 3 si el riesgo estructural es apreciable.
+            Ok(if report.risk > 0.5 { 3 } else { 0 })
+        }
+        None => {
+            println!("El fichero no es un ejecutable reconocible (PE/ELF/Mach-O).");
+            Ok(0)
+        }
+    }
 }
 
 fn cmd_serve(args: &[String]) -> Result<u8, String> {

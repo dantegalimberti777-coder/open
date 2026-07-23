@@ -14,6 +14,11 @@ license = "Proprietary"
 # inotify (Linux), ReadDirectoryChangesW (Windows), FSEvents (macOS).
 notify = "8"
 
+# Parser de binarios ejecutables (PE / ELF / Mach-O) para el análisis estático:
+# cabeceras, secciones, imports/exports, overlay, timestamps. Crate puro Rust,
+# estándar de la industria y multiplataforma.
+goblin = "0.8"
+
 # Solo en Windows: APIs oficiales de Microsoft para leer la memoria del sistema
 # (GlobalMemoryStatusEx) y recortar la memoria de trabajo del propio proceso
 # (SetProcessWorkingSetSizeEx) en la función "Optimizar". Son APIs estándar y

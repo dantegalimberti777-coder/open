@@ -35,6 +35,7 @@ pub enum Source {
     Behavior,
     Anomaly,
     MachineLearning,
+    StaticAnalysis,
 }
 
 impl Source {
@@ -47,6 +48,9 @@ impl Source {
             Source::Behavior => 0.30,
             Source::MachineLearning => 0.25,
             Source::Heuristic => 0.20,
+            // Análisis estático estructural: señal conservadora y de bajo peso
+            // (indicador de empaquetado/ofuscación, no una condena por sí sola).
+            Source::StaticAnalysis => 0.15,
             Source::Anomaly => 0.15,
         }
     }

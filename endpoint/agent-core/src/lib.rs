@@ -30,6 +30,7 @@ pub mod scanjob;
 pub mod scanner;
 pub mod server;
 pub mod signatures;
+pub mod staticanalysis;
 pub mod sysscan;
 pub mod updater;
 

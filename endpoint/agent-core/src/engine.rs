@@ -9,6 +9,7 @@ use crate::hash::{to_hex, Sha256};
 use crate::heuristics;
 use crate::reputation::ReputationSource;
 use crate::signatures::SignatureDb;
+use crate::staticanalysis;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -105,6 +106,27 @@ impl<'a> Engine<'a> {
 
         // 2) Heurística estática.
         signals.push(heuristics::analyze(content));
+
+        // 2b) Análisis estático estructural (solo ejecutables PE/ELF/Mach-O).
+        // Señal conservadora: únicamente se emite si el binario presenta un
+        // riesgo estructural apreciable (empaquetado/ofuscación, RWX, etc.),
+        // para no penalizar ejecutables legítimos y evitar falsos positivos.
+        if staticanalysis::looks_executable(content) {
+            if let Some(report) = staticanalysis::analyze(content) {
+                if report.risk > 0.2 {
+                    let detail = if report.indicators.is_empty() {
+                        "análisis estructural".to_string()
+                    } else {
+                        report.indicators.join("; ")
+                    };
+                    signals.push(Signal::new(
+                        Source::StaticAnalysis,
+                        report.risk,
+                        format!("estático: {detail}"),
+                    ));
+                }
+            }
+        }
 
         // 3) Reputación (si hay fuente configurada).
         if let Some(rep) = self.reputation {
